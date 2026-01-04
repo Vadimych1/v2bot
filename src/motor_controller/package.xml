@@ -1,0 +1,16 @@
+<?xml version="1.0" ?>
+<package>
+	<name>motor_controller</name>
+	<entrypoint>main.py</entrypoint>
+	<requires/>
+	<maintainer>todo</maintainer>
+	<description>todo</description>
+	<authors/>
+	<python-packages/>
+	<linux-scripts>
+		<lscript/>
+	</linux-scripts>
+	<windows-scripts>
+		<wscript/>
+	</windows-scripts>
+</package>

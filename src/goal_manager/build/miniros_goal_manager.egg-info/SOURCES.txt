@@ -1,0 +1,10 @@
+README.md
+setup.py
+miniros_goal_manager/__init__.py
+miniros_goal_manager/main.py
+miniros_goal_manager.egg-info/PKG-INFO
+miniros_goal_manager.egg-info/SOURCES.txt
+miniros_goal_manager.egg-info/dependency_links.txt
+miniros_goal_manager.egg-info/top_level.txt
+miniros_goal_manager/source/__init__.py
+miniros_goal_manager/source/datatypes.py

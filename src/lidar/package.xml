@@ -1,0 +1,16 @@
+<?xml version="1.0" ?>
+<package>
+	<name>lidar</name>
+	<entrypoint>main.py</entrypoint>
+	<requires>
+		<requirement>miniros</requirement>
+	</requires>
+	<maintainer>Vadimych1</maintainer>
+	<description>VBot Lidar system</description>
+	<authors>
+		<author>Vadimych1</author>
+	</authors>
+	<otherexts>
+		<!-- <ext>sudo pip3 install pyrplidar</ext> -->
+	</otherexts>
+</package>

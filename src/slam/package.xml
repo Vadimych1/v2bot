@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<package>
+	<name>slam</name>
+
+	<entrypoint>main.py</entrypoint>
+
+	<requires>
+		<requirement>miniros</requirement>
+	</requires>
+
+	<maintainer>Vadimych1</maintainer>
+
+	<description>VBot SLAM based on breezyslam</description>
+
+	<authors>
+		<author>Vadimych1</author>
+	</authors>
+
+	<linux-scripts>
+		<lscript>cd slam &amp;&amp; bash "scripts/breezyslam-install.sh" &amp;&amp; cd ..</lscript>
+	</linux-scripts>
+
+	<windows-scripts>
+		<wscript>"cd slam &amp;&amp; scripts\\breezyslam-install.bat &amp;&amp; cd .."</wscript>
+	</windows-scripts>
+</package>

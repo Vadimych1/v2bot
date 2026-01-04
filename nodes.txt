@@ -1,0 +1,21 @@
+NOTE: @ is ANON receive, / is TOPIC SEND
+
+- lidar
+/lidar (miniros/LidarDatatype)
+@ping (None)
+
+- slam
+@topic/map (slam/SLAMMap)
+/topic/pose (miniros/Vector)
+
+- pathplanner
+/globalpath (miniros/NumpyArray)
+
+- motioncontroller
+/cmdvel (miniros/Vector)
+
+- goalmanager
+/currentgoal (miniros/Vector)
+
+- motorcontroller
+/cmdvel (miniros/Vector)

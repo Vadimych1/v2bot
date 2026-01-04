@@ -1,0 +1,16 @@
+<?xml version="1.0" ?>
+<package>
+	<name>goal_manager</name>
+	<entrypoint>main.py</entrypoint>
+	<requires/>
+	<maintainer>todo</maintainer>
+	<description>todo</description>
+	<authors/>
+	<python-packages/>
+	<linux-scripts>
+		<lscript/>
+	</linux-scripts>
+	<windows-scripts>
+		<wscript/>
+	</windows-scripts>
+</package>
