@@ -66,8 +66,6 @@ class MotionController(AsyncROSClient):
 
     @aparsedata(LidarDatatype)
     async def on_lidar_lidar(self, scan: LidarDatatype):
-        await self.anon("lidar", "ping", b"hi")
-
         # project lidar scan on map copy
         # based on predicted pose for
         # better local obstacle avoidance
@@ -117,6 +115,7 @@ async def main():
         upd_time = time()
         while True:
             await asyncio.sleep(0.1)
+            await client.anon("lidar", "ping", b"hi")
 
             # if last update was too much time ago
             # we wouldnt send anything to motorcontroller
@@ -160,7 +159,7 @@ async def main():
 
             client.predicted_pose += np.array([dx, dy, dtheta])
 
-    async def run_localpath_updator():
+    async def run_localpath_updater():
         nonlocal local_path
         await client.wait()
 
@@ -180,7 +179,7 @@ async def main():
                     * METER_PER_PX  # convert to real coordinates
                 )
 
-    await asyncio.gather(client.run(), run_path_tracker(), run_localpath_updator())
+    await asyncio.gather(client.run(), run_path_tracker(), run_localpath_updater())
 
 
 asyncio.run(main())

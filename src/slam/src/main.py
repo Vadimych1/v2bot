@@ -28,8 +28,6 @@ class SLAMClient(AsyncROSClient):
     async def on_lidar_lidar(self, data: datatypes.LidarDatatype):
         dist, ang = data.distances, data.angles
 
-        await self.anon("lidar", "ping", b"hi")
-
         self.slam.update(scans_mm=dist, scan_angles_degrees=ang)
 
         self.slam.getmap(self.map)
@@ -53,6 +51,8 @@ async def main():
             x, y, theta = client.pos
             await pos_topic.post(Vector(x / 1000.0, y / 1000.0, np.deg2rad(theta)))
             await map_topic.post(SLAMMap(client.map))
+
+            await client.anon("lidar", "ping", b"hi")
 
     await asyncio.gather(
         client.run(),
