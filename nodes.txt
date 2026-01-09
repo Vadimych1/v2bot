@@ -12,10 +12,10 @@ NOTE: @ is ANON receive, / is TOPIC SEND
 /globalpath (miniros/NumpyArray)
 
 - motioncontroller
-/cmdvel (miniros/Vector)
+/cmdvel (miniros/Vector) (left, right, none)
 
 - goalmanager
 /currentgoal (miniros/Vector)
 
 - motorcontroller
-/cmdvel (miniros/Vector)
+/odometry (miniros/Vector) (dxy, dtheta, dt)
