@@ -37,6 +37,8 @@ float vel = 0;
 float xy = 0;
 const float dt = 0.01;
 
+unsigned long lastSendTime = 0;
+
 void setup() {
   pinMode(AA, OUTPUT);
   pinMode(AB, OUTPUT);
@@ -61,6 +63,8 @@ void setup() {
   Serial.println(mpu.testConnection() ? "MPU6050 OK" : "MPU6050 FAIL");
   delay(80);
   calibration();
+
+  lastSendTime = micros();
 }
 
 uint8_t ctr = 0;
@@ -109,11 +113,13 @@ void loop() {
     Serial.print(",");
     Serial.print(xy, 6);
     Serial.print(",");
-    Serial.println(0.2, 6);
+    Serial.println(((float) micros() - (float) lastSendTime) / 1000000.0f, 6);
 
     ctr = 0;
     theta = 0;
     xy = 0;
+
+    lastSendTime = micros();
   }
 
   ctr += 1;
@@ -125,15 +131,19 @@ void calibration() {
   long offsets[6];
   long offsetsOld[6];
   int16_t mpuGet[6];
+
   mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
   mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_250);
+
   mpu.setXAccelOffset(0);
   mpu.setYAccelOffset(0);
   mpu.setZAccelOffset(0);
   mpu.setXGyroOffset(0);
   mpu.setYGyroOffset(0);
   mpu.setZGyroOffset(0);
+
   delay(10);
+
   Serial.println("Calibration start. It will take about 5 seconds");
   for (byte n = 0; n < 10; n++) {
     for (byte j = 0; j < 6; j++) {
@@ -158,6 +168,7 @@ void calibration() {
     mpu.setXGyroOffset(offsets[3] / 4);
     mpu.setYGyroOffset(offsets[4] / 4);
     mpu.setZGyroOffset(offsets[5] / 4);
+    
     delay(2);
   }
 }

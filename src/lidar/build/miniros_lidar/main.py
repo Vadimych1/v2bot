@@ -1,19 +1,53 @@
 from miniros import AsyncROSClient, datatypes
-# import adafruit_rplidar as pyrplidar
-import rplidar
 import asyncio
+import pyrplidarsdk
+import platform
+import time
 
 
 class LidarClient(AsyncROSClient):
-    def __init__(self, ip = "localhost", port = 3000):
+    def __init__(self, ip="localhost", port=3000):
         super().__init__("lidar", ip, port)
 
-        self.lidar = rplidar.RPLidar(
-            port="/dev/ttyLidar",
-            baudrate=115200
+        self.lidar = pyrplidarsdk.RplidarDriver(
+            port="COM3" if platform.system() == "Windows" else "/dev/ttyLidar",
+            baudrate=115200,
         )
-        
-        self.lidar.stop_motor()
+
+        self.lidar.stop_scan()
+
+        if not self.lidar.connect():
+            print("[] failed to connect")
+            exit(1)
+
+        print(self.lidar.get_health())
+        print(self.lidar.get_device_info())
+
+        self.last_ping_time = time.time()
+
+    async def on_ping(self, _, node):
+        self.last_ping_time = time.time()
+
+    def iter_scans(self, *args, **kwargs):
+        self.lidar.start_scan()
+
+        try:
+            while True:
+                dat = self.lidar.get_scan_data()
+
+                if dat is not None:
+                    yield dat
+
+                else:
+                    print("[] null")
+
+        except Exception as _:
+            print("[e] exception occurred")
+            self.lidar.stop_scan()
+
+    def __del__(self):
+        self.lidar.stop_scan()
+        self.lidar.disconnect()
 
 
 async def main():
@@ -24,46 +58,27 @@ async def main():
 
         ldr_topic = await client.topic("lidar", datatypes.LidarDatatype)
 
-        client.lidar.start_motor()
-
         while True:
-            try:               
-                client.lidar.clean_input()
-                                 
-                # x = 0
-                for scan in client.lidar.iter_scans(min_len=360):
-                    x += 1
-                    
-                    # if x < 3:
-                    #     continue
-                    
-                    # x = 0
-                    
-                    _, angles, distances = zip(*scan)
+            if time.time() - client.last_ping_time > 7.0:
                 
-                    await ldr_topic.post(
-                        datatypes.LidarDatatype(
-                            list(distances),
-                            list(angles),
+                await asyncio.sleep(1.0)
+
+            else:
+                if True:
+                    for scan in client.iter_scans():
+                        # radians // meters // %
+                        angles, distances, _quality = scan
+
+                        await ldr_topic.post(
+                            datatypes.LidarDatatype(
+                                list(distances),
+                                list(angles),
+                            )
                         )
-                    )
 
-            except rplidar.RPLidarException as e:
-                print(f"Lidar exception: {e}. Reconnecting...")
-                
-                client.lidar.stop()
-                client.lidar.disconnect()
+                        if time.time() - client.last_ping_time > 7.0:
+                            break
 
-                await asyncio.sleep(0.4)
-                
-                client.lidar.connect()
-                
-            except Exception as e:
-                print(f"Unexpected error: {e}")
-
-                await asyncio.sleep(0.2)
-                
-                
     await asyncio.gather(
         client.run(),
         run(),

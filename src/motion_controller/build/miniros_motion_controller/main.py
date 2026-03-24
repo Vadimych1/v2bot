@@ -1,7 +1,9 @@
 from miniros_algorithms.source.pathtracking import CurrentPathTracker as CPTAlgo
 from miniros_algorithms.source.pathfinding import LocalPathPlanner as LPPAlgo
 from miniros.util.datatypes import Vector, NumpyArray, LidarDatatype
-from miniros_algorithms.source.pathfinding import find_obstacles
+from miniros_algorithms.source.pathfinding import (
+    find_obstacles,
+)  # TODO: make sure it works fine
 from miniros_constants.main import PX_PER_METER, METER_PER_PX
 from miniros_algorithms.source.pathtracking import PID
 from miniros_slam.source.datatypes import SLAMMap
@@ -23,7 +25,7 @@ class MotionController(AsyncROSClient):
     - pathplanner/globalpath
 
     posts:
-     - motioncontroller/cmdvel
+    - motioncontroller/cmdvel
 
     Updates local path every 0.18 seconds (5.56hz) with chosen LocalPathPlanner (LPP) Algorithm
 
@@ -48,14 +50,14 @@ class MotionController(AsyncROSClient):
         self.last_pose_update = time()
 
     @aparsedata(SLAMMap)
-    def on_slam_map(self, map: SLAMMap):
+    async def on_slam_map(self, map: SLAMMap):
         # decode map and copy
         # it for projection
         self.map = map.to_numpy(int(len(map.data) ** 0.5))  # map is a square
         self.projected_map = self.map
 
     @aparsedata(Vector)
-    def on_slam_pose(self, pose: Vector):
+    async def on_slam_pose(self, pose: Vector):
         # update pose and set last
         # update time
         self.pose = pose.pos_to_numpy()
@@ -63,7 +65,7 @@ class MotionController(AsyncROSClient):
         self.last_pose_update = time()
 
     @aparsedata(LidarDatatype)
-    def on_lidar_lidar(self, scan: LidarDatatype):
+    async def on_lidar_lidar(self, scan: LidarDatatype):
         # project lidar scan on map copy
         # based on predicted pose for
         # better local obstacle avoidance
@@ -86,8 +88,8 @@ class MotionController(AsyncROSClient):
         xi = xi[mask]
         yi = yi[mask]
 
+        radius = 2
         for x, y in zip(xi, yi):
-            radius = 2
             x_start = max(0, x - radius)
             x_end = min(w, x + radius + 1)
             y_start = max(0, y - radius)
@@ -96,7 +98,7 @@ class MotionController(AsyncROSClient):
             self.projected_map[y_start:y_end, x_start:x_end] = 255
 
     @aparsedata(NumpyArray)
-    def on_pathplanner_globalpath(self, path: np.ndarray):
+    async def on_pathplanner_globalpath(self, path: np.ndarray):
         # set current global path
         self.planned_path = path
 
@@ -113,6 +115,7 @@ async def main():
         upd_time = time()
         while True:
             await asyncio.sleep(0.1)
+            await client.anon("lidar", "ping", b"hi")
 
             # if last update was too much time ago
             # we wouldnt send anything to motorcontroller
@@ -156,7 +159,7 @@ async def main():
 
             client.predicted_pose += np.array([dx, dy, dtheta])
 
-    async def run_localpath_updator():
+    async def run_localpath_updater():
         nonlocal local_path
         await client.wait()
 
@@ -176,7 +179,7 @@ async def main():
                     * METER_PER_PX  # convert to real coordinates
                 )
 
-    await asyncio.gather(client.run(), run_path_tracker(), run_localpath_updator())
+    await asyncio.gather(client.run(), run_path_tracker(), run_localpath_updater())
 
 
 asyncio.run(main())

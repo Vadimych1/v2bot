@@ -3,8 +3,8 @@
 
 ### sends
 Topics:
-- odometry (Vector: dxy, dtheta, dt)
+- motorcontroller/odometry (Vector: dxy, dtheta, dt)
 
 ### receives
 Topics:
-- cmdvel (Vector: left, right, none)
+- motioncontroller/cmdvel (Vector: left, right, none)

@@ -18,35 +18,43 @@ class SLAMClient(AsyncROSClient):
             sensors.RPLidarA1(),
             cnst.MAP_SIZE_PX,
             cnst.MAP_SIZE_MET,
-            hole_width_mm=130,
-            sigma_theta_degrees=5
+            hole_width_mm=200,
+            sigma_theta_degrees=5,
         )
 
         self.map = bytearray(cnst.MAP_SIZE_PX**2)
         self.pos = (0, 0, 0)
-        
+
         self.dxy = 0
         self.dtheta = 0
         self.dt = 0
 
     @aparsedata(datatypes.LidarDatatype)
     async def on_lidar_lidar(self, data: datatypes.LidarDatatype):
-        dist, ang = data.distances, data.angles
+        dist = np.float32(data.distances * 1000)
+        ang = np.float32(np.rad2deg(data.angles))
 
-        self.slam.update(scans_mm=dist, scan_angles_degrees=ang, pose_change=(self.dxy, self.dtheta, self.dt))
+        if len(dist) < 715 or len(ang) < 715:
+            return
+
+        self.slam.update(
+            scans_mm=dist.tolist()[:715],
+            scan_angles_degrees=ang.tolist()[:715],
+            pose_change=(self.dxy, self.dtheta, self.dt),
+        )
         self.dx = 0
         self.dtheta = 0
         self.dt = 0
 
         self.slam.getmap(self.map)
         self.pos = self.slam.getpos()
-        
+
     @aparsedata(datatypes.Vector)
     async def on_motorcontroller_odometry(self, data: datatypes.Vector):
         self.dxy += data.x
         self.dtheta += data.y
         self.dt += data.z
-        
+
         print("Got data!", data.x, data.y, data.z)
 
 

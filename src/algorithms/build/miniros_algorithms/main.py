@@ -3,7 +3,7 @@ Vadimych1, 2025
 
 This demo shows work of a pathfinding algorithm and than
 simulates robot movement based on PurePursuit or PID
-path tracking. You can change which algorithm to use
+path tracking. You can decide which algorithm to use
 by commenting/uncommenting lines 18-27 and 29-35
 """
 
@@ -129,7 +129,7 @@ for i in range(2000):
 
     line2.set_xdata([x, x + 100 * np.cos(theta)])
     line2.set_ydata([y, y + 100 * np.sin(theta)])
-    
+
     fig2.canvas.draw()
     plt.pause(0.002)
 

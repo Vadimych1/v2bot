@@ -1,16 +1,17 @@
-<?xml version="1.0" ?>
+<?xml version="1.0"?>
 <package>
 	<name>motion_controller</name>
 	<entrypoint>main.py</entrypoint>
-	<requires/>
-	<maintainer>todo</maintainer>
-	<description>todo</description>
-	<authors/>
-	<python-packages/>
+	<requires />
+	<maintainer>vadimych1</maintainer>
+	<description>Motion controller package. Receives current global path from path_planner and
+		updates it and then sends cmdvel commands to motor_controller</description>
+	<authors />
+	<python-packages />
 	<linux-scripts>
-		<lscript/>
+		<lscript />
 	</linux-scripts>
 	<windows-scripts>
-		<wscript/>
+		<wscript />
 	</windows-scripts>
 </package>

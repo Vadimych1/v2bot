@@ -1,5 +1,4 @@
 body {
-  margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
     'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
     sans-serif;
@@ -17,4 +16,47 @@ body {
 
 .v-btn:hover {
   filter: brightness(0.95);
+}
+
+.v-dict-display {
+  background-color: white;
+  box-shadow: 1px 1px 10px gray;
+  padding: 10px;
+  margin: 5px;
+  border-radius: 10px;
+
+  position: relative;
+}
+
+.v-dict-display--item {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+.v-dict-display--key {
+  font-size: 20px;
+  font-weight: bold;
+  margin: 0;
+}
+
+.v-dict-display--value {
+  font-size: 23px;
+  margin: 0;
+}
+
+.v-dict-display--hint {
+  position: absolute;
+  opacity: 0;
+  top: calc(100% + 10px);
+  left: 0;
+}
+
+.v-dict-display:hover > .v-dict-display--hint {
+  opacity: 1;
+  padding: 5px;
+  color: gray;
+  box-shadow: 1px 1px 10px gray;
+  border-radius: 10px;
 }

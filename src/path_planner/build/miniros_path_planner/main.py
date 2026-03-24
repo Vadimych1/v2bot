@@ -20,15 +20,15 @@ class PathPlanner(AsyncROSClient):
         self.planned_path = np.array([])
 
     @aparsedata(SLAMMap)
-    def on_slam_map(self, map: SLAMMap):
+    async def on_slam_map(self, map: SLAMMap):
         self.map = map.to_numpy(int(len(map.data) ** 0.5))  # map is a square
 
     @aparsedata(Vector)
-    def on_slam_pose(self, pose: Vector):
+    async def on_slam_pose(self, pose: Vector):
         self.pose = pose.pos_to_numpy()
 
-    @aparsedata
-    def on_goalmanager_currentgoal(self, goal: Vector):
+    @aparsedata(Vector)
+    async def on_goalmanager_currentgoal(self, goal: Vector):
         # TODO: adaptive distance
         if np.linalg.norm([goal.x - self.pose[0], goal.y - self.pose[1]]) > 0.3:
             self.current_goal = goal
@@ -59,7 +59,7 @@ async def main():
                 client.path_planner.map = client.map
                 client.path_planner.goal = client.current_goal
                 client.path_planner.pos = client.pose[2:]
-                
+
                 prev_goal = client.current_goal
 
                 nodes, end_node, dilated_map = (
