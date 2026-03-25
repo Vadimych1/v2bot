@@ -55,7 +55,7 @@ class SLAMClient(AsyncROSClient):
         self.dtheta += data.y
         self.dt += data.z
 
-        print("Got data!", data.x, data.y, data.z)
+        print("[] got odometry data {dxy dtheta dt}:", data.x, data.y, data.z)
 
 
 async def main():
@@ -76,7 +76,7 @@ async def main():
             await pos_topic.post(Vector(x / 1000.0, y / 1000.0, np.deg2rad(theta)))
             await map_topic.post(SLAMMap(client.map))
 
-            await client.anon("lidar", "ping", b"hi")
+            await client.anon("lidar", "ping", b"0")
 
     await asyncio.gather(
         client.run(),
