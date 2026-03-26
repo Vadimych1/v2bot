@@ -14,7 +14,7 @@ target_folder="dist"
 first_file=$(find "$target_folder" -maxdepth 1 -type f -name "*.whl" | head -n 1)
 
 if [ -n "$first_file" ] && [ -f "$first_file" ]; then
-    $PYTHON -m pip install --force-reinstall "$first_file"
+    $PYTHON -m pip install --force-reinstall --break-system-packages "$first_file" --root-user-action warn
 else
     echo "build not found"
     exit 1

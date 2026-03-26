@@ -10,7 +10,7 @@ class LidarClient(AsyncROSClient):
         super().__init__("lidar", ip, port)
 
         self.lidar = pyrplidarsdk.RplidarDriver(
-            port="COM3" if platform.system() == "Windows" else "/dev/ttyLidar",
+            port="COM3" if platform.system() == "Windows" else "/dev/lidar",
             baudrate=115200,
         )
 

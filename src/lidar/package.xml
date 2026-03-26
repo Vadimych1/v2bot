@@ -12,10 +12,10 @@
 	</authors>
 
 	<linux-scripts>
-		<lscript>cd lidar &amp;&amp; bash "scripts/pyrplidarsdk-install.sh" &amp;&amp; cd ..</lscript>
+		<lscript>cd lidar &amp;&amp; bash "scripts/pyrplidarsdk-install.sh" PYEXEC &amp;&amp; cd ..</lscript>
 	</linux-scripts>
 
 	<windows-scripts>
-		<wscript>"cd lidar &amp;&amp; scripts\\pyrplidarsdk-install.bat &amp;&amp; cd .."</wscript>
+		<wscript>"cd lidar &amp;&amp; scripts\\pyrplidarsdk-install.bat PYEXEC &amp;&amp; cd .."</wscript>
 	</windows-scripts>
 </package>

@@ -21,7 +21,7 @@ class MotorControllerClient(AsyncROSClient):
                 port = "COM5"
 
             case _:
-                port = "/dev/ttyArduino"  # TODO: change to the actual arduino port name
+                port = "/dev/arduino"  # TODO: change to the actual arduino port name
 
         self.serial = ArduinoSerial(port, 115200)
         self.last_update = time.time()

@@ -205,6 +205,13 @@ void _handleData() {
   analogWrite(PWM_A, val_A);
   analogWrite(PWM_B, val_B);
 
+  digitalWrite(AA, LOW);
+  digitalWrite(BA, LOW);
+  digitalWrite(AB, LOW);
+  digitalWrite(BB, LOW);
+
+  delayMicroseconds(10);
+
   digitalWrite(AA, val_AA);
   digitalWrite(BA, val_BA);
   digitalWrite(AB, val_AB);
