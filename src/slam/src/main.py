@@ -6,7 +6,6 @@ from miniros_constants import main as cnst
 import miniros_breezyslam.sensors as sensors
 from miniros import AsyncROSClient, datatypes
 import miniros_breezyslam.algorithms as algos
-from miniros.util.decorators import aparsedata
 from miniros_slam.source.datatypes import SLAMMap
 
 
