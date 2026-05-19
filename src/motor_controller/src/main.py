@@ -21,7 +21,7 @@ class MotorControllerClient(AsyncROSClient):
                 port = "COM5"
 
             case _:
-                port = "/dev/arduino"  # TODO: change to the actual arduino port name
+                port = "/dev/arduino"
 
         self.serial = ArduinoSerial(port, 115200)
         self.last_update = time.time()
@@ -38,7 +38,7 @@ class MotorControllerClient(AsyncROSClient):
         l, r = self.ik.calculate_wheel_speeds(v, w)
         
         await self.serial_sync_lock.acquire()
-        self.serial.send_speeds(l, r)
+        self.serial.send_floats(l, r)
         self.serial_sync_lock.release()
 
 
@@ -72,4 +72,45 @@ async def main():
     )
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
+
+# # TEST:
+# client = MotorControllerClient()
+# client.serial.run_deltas_fetch()
+
+# import time
+# # for i in range(40):
+# #     time.sleep(0.5)
+    
+# #     while len(client.serial.odometry_queue) > 0:
+# #         dat = client.serial.odometry_queue.popleft()
+# #         print(dat)
+
+
+# while True:
+#     k = input()
+    
+#     if k == "w":
+#         client.serial.send_floats(4.0, 4.0)
+#         time.sleep(0.5)
+#         client.serial.send_floats(0.0, 0.0)
+
+#     elif k == "s":
+#         client.serial.send_floats(-4.0, -4.0)
+#         time.sleep(0.5)
+#         client.serial.send_floats(0.0, 0.0)
+
+#     elif k == "a":
+#         client.serial.send_floats(-4.0, 4.0)
+#         time.sleep(0.2)
+#         client.serial.send_floats(0.0, 0.0)
+
+#     elif k == "d":
+#         client.serial.send_floats(4.0, -4.0)
+#         time.sleep(0.2)
+#         client.serial.send_floats(0.0, 0.0)
+
+#     elif k == "q":
+#         client.serial.send_floats(0.0, 0.0)
+#         quit(0)

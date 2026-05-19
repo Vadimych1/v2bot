@@ -29,8 +29,6 @@ class LidarClient(AsyncROSClient):
         self.last_ping_time = time.time()
 
     def iter_scans(self, *args, **kwargs):
-        self.lidar.start_scan()
-
         try:
             while True:
                 dat = self.lidar.get_scan_data()
@@ -57,27 +55,27 @@ async def main():
         await client.wait()
 
         ldr_topic = await client.topic("lidar", datatypes.LidarDatatype)
-
+        
+        client.lidar.start_scan()
         while True:
             if time.time() - client.last_ping_time > 7.0:
-                
                 await asyncio.sleep(1.0)
 
             else:
-                if True:
-                    for scan in client.iter_scans():
-                        # radians // meters // %
-                        angles, distances, _quality = scan
+                # if True:
+                for scan in client.iter_scans():
+                    # radians // meters // %
+                    angles, distances, _quality = scan
 
-                        await ldr_topic.post(
-                            datatypes.LidarDatatype(
-                                list(distances),
-                                list(angles),
-                            )
+                    await ldr_topic.post(
+                        datatypes.LidarDatatype(
+                            distances,
+                            angles,
                         )
+                    )
 
-                        if time.time() - client.last_ping_time > 7.0:
-                            break
+                    if time.time() - client.last_ping_time > 7.0:
+                        break
 
     await asyncio.gather(
         client.run(),

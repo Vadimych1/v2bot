@@ -2,7 +2,7 @@ import numpy as np
 from scipy.spatial import KDTree
 from scipy.ndimage import binary_dilation, label, center_of_mass
 from skimage import measure
-from miniros_constants.main import ROBOT_SIZE_PX
+from miniros_constants.main import ROBOT_SIZE_PX, PX_PER_METER
 from cv2 import resize, INTER_NEAREST
 
 
@@ -111,6 +111,11 @@ class RRTStar(PathPlanner):
     def _check_collision(self, p1, p2, map):
         x1, y1 = p1
         x2, y2 = p2
+        
+        x1 = round(x1 * PX_PER_METER - 1)
+        y1 = round(y1 * PX_PER_METER - 1)
+        x2 = round(x2 * PX_PER_METER - 1)
+        y2 = round(y2 * PX_PER_METER - 1)
 
         points = self._br_line(x1, y1, x2, y2)
 

@@ -5,8 +5,8 @@ NOTE: @ is ANON receive, / is TOPIC SEND
 @ping (None)
 
 - slam
-@topic/map (slam/SLAMMap)
-/topic/pose (miniros/Vector)
+/topic/map (slam/NumpyArray)
+/topic/pose (miniros/Movement)
 
 - pathplanner
 /globalpath (miniros/NumpyArray)
