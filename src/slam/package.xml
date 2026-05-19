@@ -17,10 +17,10 @@
 	</authors>
 
 	<linux-scripts>
-		<lscript>cd slam &amp;&amp; bash "scripts/breezyslam-install.sh" PYEXEC &amp;&amp; cd ..</lscript>
+		<!-- <lscript>cd slam &amp;&amp; bash "scripts/breezyslam-install.sh" PYEXEC &amp;&amp; cd ..</lscript> -->
 	</linux-scripts>
 
 	<windows-scripts>
-		<wscript>"cd slam &amp;&amp; scripts\\breezyslam-install.bat PYEXEC &amp;&amp; cd .."</wscript>
+		<!-- <wscript>"cd slam &amp;&amp; scripts\\breezyslam-install.bat PYEXEC &amp;&amp; cd .."</wscript> -->
 	</windows-scripts>
 </package>
