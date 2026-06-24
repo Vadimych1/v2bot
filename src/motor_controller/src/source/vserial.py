@@ -2,7 +2,7 @@ import threading
 import serial
 import struct
 import time
-from collections import deque
+from asyncio import Queue
 
 
 class ArduinoSerial:
@@ -13,7 +13,7 @@ class ArduinoSerial:
         self.fetch_thread = None
         self.running = threading.Lock()
 
-        self.odometry_queue = deque()
+        self.odometry_queue = Queue(100)
 
         time.sleep(2)  # Wait for Arduino to reset
 
@@ -52,12 +52,14 @@ class ArduinoSerial:
     def _deltas_fetch(self):
         while self.running.locked():
             try:
-                l = self.serial.readline().decode().strip().split(",")
+                l = self.serial.readline().decode().strip().split("\t")
                 l = list(map(float, l))
-                self.odometry_queue.append(l)
+
+                self.odometry_queue.put_nowait(l)
+
+            except Exception as e:
+                print(e)
                 
-            except Exception:
-                self.odometry_queue.append([0, 0, 0.5])
 
     def run_deltas_fetch(self):
         self.fetch_thread = threading.Thread(target=self._deltas_fetch, daemon=True)

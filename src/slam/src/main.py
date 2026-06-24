@@ -1,25 +1,17 @@
+from asyncio import Queue
 import cv2
 import asyncio
-import numpy as np
-from asyncio import Queue
 from queue import Queue as SyncQueue
-# from miniros_constants import main as cnst
 from miniros import AsyncROSClient, datatypes
 from miniros.util.decorators import aparsedata, threaded
-# from miniros_slam.source.datatypes import SLAMMap
+from miniros_slam.source.datatypes import SLAMOffsetMap
 from miniros.util.datatypes import Movement, Vector
-
-# import miniros_breezyslam.sensors as sensors # old slam
-# import miniros_breezyslam.algorithms as algos # old slam
-
-from yag_slam.graph_slam import GraphSlam, make_near_scan_visitor
+from yag_slam.graph_slam import GraphSlam
 from yag_slam.scan_matching import Scan2DMatcherCpp
-from yag_slam.graph import do_breadth_first_traversal
-from karto_scanmatcher import create_occupancy_grid, Pose2
+from karto_scanmatcher import Pose2
 from yag_slam.models import LocalizedRangeScan
-from yag_slam.splicing import map_to_graph
 from tiny_tf.tf import Transform
-from tiny_tf.transformations import euler_from_quaternion, quaternion_from_euler
+from tiny_tf.transformations import quaternion_from_euler
 
 
 def movement2pose(msg: Movement) -> Pose2:
@@ -43,7 +35,7 @@ class SLAMClient(AsyncROSClient):
         super().__init__("slam", ip, port)
 
         self.mapper = None
-        self.last_pose = Movement(Vector(0, 10, 0), Vector(0, 0, 0))
+        self.last_pose = Vector(0, 0, 0)
         self.scans = []
 
         # self.slam = algos.RMHC_SLAM(
@@ -68,7 +60,7 @@ class SLAMClient(AsyncROSClient):
         seq_scan_matcher_config = {
             "angle_variance_penalty": 0.0349,  # 0.349
             "distance_variance_penalty": 0.03,  # 0.3
-            "coarse_search_angle_offset": 0.1,  # 0.349
+            "coarse_search_angle_offset": 0.349,
             "coarse_angle_resolution": 0.0349,
             "fine_search_angle_resolution": 0.00349,
             "use_response_expansion": True,
@@ -94,30 +86,34 @@ class SLAMClient(AsyncROSClient):
         self.mapper = GraphSlam(
             seq_matcher,
             loop_matcher,
-            scan_buffer_len=10,
-            min_response_coarse=0.6,
-            min_response_fine=0.7,
+            scan_buffer_len=25,
+            min_response_coarse=0.3,
+            min_response_fine=0.4,
         )
 
-    def _make_map(self):
-        grid = self.mapper.make_occupancy_grid(0.05, 20)
-        im = grid.image
+    def _make_map(self, resolution=0.05):
+        """
+        Creates grid map
 
-        # static_only = 255 - im.copy()
-        # static_only[static_only < 200] = 0
-        # num_conn, mask, stats, position = cv2.connectedComponentsWithStats(static_only)
+        Returns tuple of:
+        - binary grid (255/0) map, where 255 is empty and 0 is full
+        - width
+        - height
+        - offset_x (px)
+        - offset_y (px)
+        - resolution
+        """
 
-        # for ii, stat in enumerate(stats):
-        #     if stat[-1] < 5:
-        #         im[mask == ii] = 255
+        grid = self.mapper.make_occupancy_grid(resolution, 8)
+        image = grid.image
 
-        # im = im.astype('int16')
+        full = image < 100
+        empty = image >= 100
 
-        # im[im == 0] = 100
-        # im[im == 200] = -1
-        # im[im == 255] = 0
+        image[full] = 0
+        image[empty] = 255
 
-        return im
+        return grid.image, grid.width, grid.height, grid.offset.x, grid.offset.y, resolution
 
     @threaded()
     def process_scans(self):
@@ -125,7 +121,7 @@ class SLAMClient(AsyncROSClient):
             _d = self.scan_queue.get()
 
             scan = _d[0]  # datatypes.LidarDatatype
-            pose: Movement = _d[1]
+            pose: Vector = _d[1]
 
             ranges, angles = zip(
                 *sorted(zip(scan.distances, scan.angles), key=lambda x: x[1])
@@ -141,42 +137,36 @@ class SLAMClient(AsyncROSClient):
                 step,
                 0,
                 20,
-                20,
-                pose.pos.x,
-                pose.pos.y,
-                pose.ang.z,
+                8,
+                pose.x,
+                pose.y,
+                pose.z,
             )
-
-            data.odom_pose = Pose2()
 
             res, closed = self.mapper.process_scan(data)
 
-            if res is None:
-                continue
-
-            else:
-                self.last_pose = pose2movement(res.best_pose)
-
             try:
-                self.pos_queue.put_nowait(self.last_pose)
+                self.pos_queue.put_nowait(pose2movement(res.best_pose))
             except Exception as e:
-                print(e)
+                pass
 
             try:
                 self.map_queue.put_nowait(True)
             except Exception as e:
-                print(e)
+                pass
 
     @aparsedata(datatypes.LidarDatatype)
     async def on_lidar_lidar(self, data):  # datatypes.LidarDatatype
         self.scan_queue.put((data, self.last_pose))
+
         await self.anon("lidar", "ping", b"hi")
 
     @aparsedata(datatypes.Vector)
     async def on_motorcontroller_odometry(self, data: datatypes.Vector):
-        self.dxy += data.x
-        self.dtheta += data.y
-        self.dt += data.z
+        # self.dxy += data.x
+        # self.dtheta += data.y
+        # self.dt += data.z
+        self.last_pose = data
 
 
 async def main():
@@ -195,7 +185,7 @@ async def main():
     async def post_map_job():
         await client.wait()
 
-        map_topic = await client.topic("map", datatypes.NumpyArray)
+        map_topic = await client.topic("map", SLAMOffsetMap)
 
         n = 0
         while True:
@@ -203,10 +193,25 @@ async def main():
             n += 1
 
             if n % 3 == 0:
-                _map = client._make_map()
-                cv2.imwrite("map.png", _map)
+                grid, width, height, ofs_x, ofs_y, resolution = client._make_map()
+
+                # "grid": NumpyArray,
+                # "width": Int,
+                # "height": Int,
+                # "offset_x": Int,
+                # "offset_y": Int,
+                # "resolution": Float,
+                _map = SLAMOffsetMap(
+                    grid = grid,
+                    width = width,
+                    height = height,
+                    offset_x = -int(ofs_x / resolution), # offset is negative because  
+                    offset_y = -int(ofs_y / resolution), # it is given in world coordinates
+                    resolution = resolution
+                )
 
                 await map_topic.post(_map)
+                cv2.imwrite("map.png", grid)
 
     async def run():
         await client.wait()
