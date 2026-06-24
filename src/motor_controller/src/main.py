@@ -51,20 +51,31 @@ async def main():
 
         odometry_topic = await client.topic("odometry", datatypes.Vector)
 
-        while True:
-            await asyncio.sleep(0.19)
+        async def odometry_fetch():
+            while True:
+                x, y, t = await client.serial.odometry_queue.get()
+                await odometry_topic.post(datatypes.Vector(x, y, t))
 
-            # time limit from last speeds
-            # update to prevent crashes
-            if time.time() - client.last_update > 1.0:
-                await client.serial_sync_lock.acquire()
-                client.serial.send_floats(0, 0)
-                client.serial_sync_lock.release()
+        async def crash_prevent():
+            while True:
+                await asyncio.sleep(0.1)
 
-            while len(client.serial.odometry_queue) > 0:
-                dat = client.serial.odometry_queue.popleft()
-                await odometry_topic.post(datatypes.Vector(dat[0], dat[1], dat[2]))
-                await asyncio.sleep(0.03) # a small delay
+                # time limit from last speeds
+                # update to prevent crashes
+                if time.time() - client.last_update > 1.0:
+                    await client.serial_sync_lock.acquire()
+                    client.serial.send_floats(0, 0)
+                    client.serial_sync_lock.release()
+
+
+        odometry_task = asyncio.create_task(odometry_fetch())
+        crash_prevent_task = asyncio.create_task(crash_prevent())
+
+        await asyncio.gather(
+            odometry_task,
+            crash_prevent_task,
+        )
+
 
     await asyncio.gather(
         client.run(),

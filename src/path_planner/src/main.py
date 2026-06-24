@@ -1,37 +1,332 @@
 import time
 import asyncio
 import numpy as np
+import cv2 as cv
 from miniros import AsyncROSClient
 from miniros.util.decorators import aparsedata
-from miniros_slam.source.datatypes import SLAMMap
-from miniros.util.datatypes import Vector, NumpyArray
-from miniros_algorithms.source.pathfinding import GlobalPathPlanner as GPPAlgo
+from miniros_slam.source.datatypes import SLAMOffsetMap
+from miniros.util.datatypes import Movement, Vector, NumpyArray
+# from miniros_algorithms.source.pathfinding import GlobalPathPlanner as GPPAlgo
 
 
 class PathPlanner(AsyncROSClient):
-    def __init__(self, ip="localhost", port=3000, _parse_handlers=True):
-        super().__init__("path_planner", ip, port, _parse_handlers)
+    def __init__(self, robot_radius_m = 0.25, ip="localhost", port=3000, _parse_handlers=True):
+        super().__init__("pathplanner", ip, port, _parse_handlers)
 
-        self.map = None
-        self.pose = None
-        self.current_goal = np.array([12.5, 12.5])
+        self.robot_radius_m = robot_radius_m
 
-        self.path_planner = GPPAlgo()
-        self.planned_path = np.array([])
+        # grid map retrieved from slam
+        self.grid = None
+        self.dilated_grid = None
 
-    @aparsedata(SLAMMap)
-    async def on_slam_map(self, map: SLAMMap):
-        self.map = map.to_numpy(int(len(map.data) ** 0.5))  # map is a square
+        self.tree = []
+        
+        # map size in pixels
+        self.width = 0
+        self.height = 0
 
-    @aparsedata(Vector)
-    async def on_slam_pose(self, pose: Vector):
-        self.pose = np.array([pose.x, pose.y])
+        # (0, 0) offset on map
+        # in pixels
+        self.offset_x = 0
+        self.offset_y = 0
+        
+        # map resolution (meters per pixel)
+        self.resolution = 1
+
+        # start pose (x, y) in meters
+        self.start_pos = None
+
+        # target pos (x, y) in meters
+        self.end_pos = None
+
+    def _dilate_grid(self):
+        robot_r = int(self.robot_radius_m / self.resolution)
+        kernel = cv.getStructuringElement(
+            cv.MORPH_RECT,
+            (2 * robot_r + 1, 2 * robot_r + 1)
+        )
+
+        kernel = cv.getStructuringElement(
+            cv.MORPH_RECT,
+            (2 * robot_r + 1, 2 * robot_r + 1)
+        )
+
+        obstacle_mask = (self.grid == 0).astype(np.uint8) * 255
+        dilated_mask = cv.dilate(obstacle_mask, kernel, iterations=1)
+
+        self.dilated_grid = self.grid.copy()
+        self.dilated_grid[dilated_mask == 255] = 0
+
+    def _world_to_pixel(self, world_point: tuple[float, float]):
+        wx, wy = world_point
+        
+        px = int(round(wx / self.resolution + self.offset_x))
+        py = int(round(wy / self.resolution + self.offset_y))
+
+        return px, py
+    
+    def _pixel_to_world(self, pixel_point: tuple[int, int]):
+        px, py = pixel_point
+
+        wx = (px - self.offset_x) * self.resolution
+        wy = (py - self.offset_y) * self.resolution
+        
+        return wx, wy
+    
+    def _is_free(self, pixel_point: tuple[int, int]):
+        px, py = pixel_point
+        px, py = int(px), int(py)
+
+        if px < 0 or px >= self.width or py < 0 or py >= self.height:
+            return False
+        
+        return self.dilated_grid[py, px] >= 90
+    
+    def _line_of_sight(self, p1: tuple[int, int], p2: tuple[int, int]):
+        x1, y1 = p1
+        x2, y2 = p2
+
+        x1, y1 = int(x1), int(y1)
+        x2, y2 = int(x2), int(y2)
+
+        dx = abs(x2 - x1)
+        dy = abs(y2 - y1)
+
+        sx = 1 if x1 < x2 else -1
+        sy = 1 if y1 < y2 else -1
+
+        err = dx - dy
+
+        while True:
+            if not self._is_free((x1, y1)):
+                return False
+            
+            if x1 == x2 and y1 == y2:
+                break
+
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x1 += sx
+
+            if e2 < dx:
+                err += dx
+                y1 += sy
+
+        return True
+    
+    def _distance(self, a: tuple[float, float], b: tuple[float, float]) -> float:
+        return np.hypot(a[0] - b[0], a[1] - b[1])
+    
+    def _nearest(self, tree, point: tuple[float, float]):
+        min_dist = float('inf')
+        nearest_idx = -1
+
+        for i, node in enumerate(tree):
+            d = self._distance(node['pos'], point)
+            if d < min_dist:
+                min_dist = d
+                nearest_idx = i
+
+        return nearest_idx
+    
+    def _near(self, tree, point: tuple[float, float], radius: float):
+        indicies = []
+        for i, node in enumerate(tree):
+            if self._distance(node['pos'], point) <= radius:
+                indicies.append(i)
+        
+        return indicies
+    
+    def _steer(self, from_pos: tuple[float, float], to_pos: tuple[float, float], step: float) -> tuple[float, float]:
+        dist = self._distance(from_pos, to_pos)
+
+        if dist <= step:
+            return to_pos
+        
+        ratio = step / dist
+
+        new_x = from_pos[0] + (to_pos[0] - from_pos[0]) * ratio
+        new_y = from_pos[1] + (to_pos[1] - from_pos[1]) * ratio
+        
+        return new_x, new_y
+
+    def _greedy_shortcut(self, pixel_path: list[tuple[int, int]], max_lookahead: int = 3):
+        if len(pixel_path) <= 2:
+            return pixel_path
+
+        optimized_path = [pixel_path[0]]
+        current_idx = 0
+        n = len(pixel_path)
+
+        while current_idx < n - 1:
+            found_shortcut = False
+
+            for target_idx in range(min(n - 1, current_idx + max_lookahead), current_idx + 1, -1):
+                dot_a = pixel_path[current_idx]
+                dot_b = pixel_path[target_idx]
+
+
+                if self._line_of_sight(dot_a, dot_b):
+                    optimized_path.append(dot_b)
+
+                    current_idx = target_idx
+                    found_shortcut = True
+                    
+                    break
+            
+            if not found_shortcut:
+                current_idx += 1
+                optimized_path.append(pixel_path[current_idx])
+        
+        return optimized_path
+
+    def find_path(self, 
+                  max_iter: int = 2000, 
+                  step_size: float = 10.0, 
+                  goal_tolerance: float = 10.0, 
+                  search_radius_factor: float = 1.0) -> list[tuple[float, float]] | None:
+        """
+        RRT* Pathfinding
+        """
+
+        if self.grid is None or self.start_pos is None or self.end_pos is None:
+            return None
+        
+        # preprocess grid using dilation
+        self._dilate_grid()
+
+        start_pixel = self._world_to_pixel(self.start_pos)
+        end_pixel = self._world_to_pixel(self.end_pos)
+
+        if not self._is_free(start_pixel) or not self._is_free(end_pixel):
+            return None
+        
+        self.tree = [{'pos': start_pixel, 'parent': -1, 'cost': 0.0}]
+
+        def get_radius(n: int) -> float:
+            gamma = 50.0 * search_radius_factor
+
+            if n <= 1:
+                return step_size * 2
+            
+            return min(step_size * 5, gamma * np.sqrt(np.log(n) / n))
+        
+        h = self.height
+        w = self.width
+
+        for iteration in range(max_iter):
+            rand_x = np.random.uniform(0, w - 1)
+            rand_y = np.random.uniform(0, h - 1)
+            rand_point = (rand_x, rand_y)
+
+            nearest_idx = self._nearest(self.tree, rand_point)
+            nearest_node = self.tree[nearest_idx]
+            nearest_pos = nearest_node['pos']
+
+            new_pos = self._steer(nearest_pos, rand_point, step_size)
+
+            if not self._is_free(new_pos) or not self._line_of_sight(nearest_pos, new_pos):
+                continue
+
+            radius = get_radius(len(self.tree))
+            near_indices = self._near(self.tree, new_pos, radius)
+
+            min_cost = float('inf')
+            best_parent = nearest_idx
+            for idx in near_indices:
+                node = self.tree[idx]
+
+                if self._line_of_sight(node['pos'], new_pos):
+                    cost_candidate = node['cost'] + self._distance(node['pos'], new_pos)
+                    if cost_candidate < min_cost:
+                        min_cost = cost_candidate
+                        best_parent = idx
+            
+            if nearest_idx not in near_indices:
+                if self._line_of_sight(nearest_pos, new_pos):
+                    cost_candidate = nearest_node['cost'] + self._distance(nearest_pos, new_pos)
+                    if cost_candidate < min_cost:
+                        min_cost = cost_candidate
+                        best_parent = nearest_idx
+            
+            if min_cost == float('inf'):
+                continue
+
+            new_node = {'pos': new_pos, 'parent': best_parent, 'cost': min_cost}
+            self.tree.append(new_node)
+            new_idx = len(self.tree) - 1
+
+            # rewire
+            for idx in near_indices:
+                node = self.tree[idx]
+                cost_via_new = new_node['cost'] + self._distance(new_pos, node['pos'])
+
+                if cost_via_new < node['cost'] and self._line_of_sight(new_pos, node['pos']):
+                    node['parent'] = new_idx
+                    node['cost'] = cost_via_new
+
+            if self._distance(new_pos, end_pixel) <= goal_tolerance and self._line_of_sight(new_pos, end_pixel):
+                end_cost = new_node['cost'] + self._distance(new_pos, end_pixel)
+                end_node = {'pos': end_pixel, 'parent': new_idx, 'cost': end_cost}
+
+                self.tree.append(end_node)
+                end_idx = len(self.tree) - 1
+
+                path_pixel = []
+                current = end_idx
+
+                while current != -1:
+                    path_pixel.append(self.tree[current]['pos'])
+                    current = self.tree[current]['parent']
+
+                path_pixel.reverse()
+
+                # optimize path
+                path_pixel = self._greedy_shortcut(path_pixel)
+
+                map_copy: np.array = self.dilated_grid.copy()
+                for i in range(len(path_pixel) - 1):
+                    p1 = path_pixel[i]
+                    p2 = path_pixel[i + 1]
+
+                    map_copy = cv.line(map_copy, tuple(map(int, p1)), tuple(map(int, p2)), color=0, thickness=1)
+
+                cv.imwrite("path_planner.png", map_copy)
+
+                path_world = [self._pixel_to_world(p) for p in path_pixel]
+
+                return path_world
+
+        return None
+
+    @aparsedata(SLAMOffsetMap)
+    async def on_slam_map(self, map):
+        """
+        map: SLAMOffsetMap
+        (see v2bot/src/slam/src/source/datatypes.py)
+        """
+        
+        # "grid": NumpyArray,
+        # "width": Int,
+        # "height": Int,
+        # "offset_x": Int,
+        # "offset_y": Int,
+        # "resolution": Float,
+        self.grid = map.grid
+        self.width = map.width
+        self.height = map.height
+        self.offset_x = map.offset_x
+        self.offset_y = map.offset_y
+        self.resolution = map.resolution
+
+    @aparsedata(Movement)
+    async def on_slam_pose(self, pose: Movement):
+        self.start_pos = (pose.pos.x, pose.pos.y)
 
     @aparsedata(Vector)
     async def on_goalmanager_currentgoal(self, goal: Vector):
-        # TODO: adaptive distance
-        if np.linalg.norm([goal.x - self.pose[0], goal.y - self.pose[1]]) > 0.3:
-            self.current_goal = np.array([goal.x, goal.y])
+        self.end_pos = (goal.x, goal.y)
 
 
 async def main():
@@ -42,42 +337,28 @@ async def main():
 
         path_topic = await client.topic("globalpath", NumpyArray)
 
-        prev_goal = np.array([12.5, 12.5])
+        prev_goal = None
         k = 0
         while True:
             await asyncio.sleep(0.1)
             k += 1
 
-            # rebuild path only when:
-            # 1) goal changed too much TODO: change 5 to better max distance
-            # 2) every 17 seconds TODO: change this value to more real-like
-            needs_rebuild = np.linalg.norm(client.current_goal - prev_goal) > 5 or k >= 170
+            needs_rebuild = client.end_pos is not None and (prev_goal is None or\
+                (prev_goal is not None and client._distance(client.end_pos, prev_goal) > 0.4) \
+                or (k >= 150 and client._distance(client.start_pos, client.end_pos) > 1.5))
 
-            if needs_rebuild and client.map is not None and client.pose is not None:
+            if needs_rebuild:
                 build_start = time.time()
-
-                client.path_planner.map = client.map
-                client.path_planner.goal = client.current_goal
-                client.path_planner.pos = client.pose
-
-                prev_goal = client.current_goal
-
-                nodes, end_node, dilated_map = (
-                    client.path_planner.build_path()
-                )  # TODO: save graph and map?
-                path = client.path_planner._reconstruct_path(end_node)
-
-                client.planned_path = path
-
+                path = client.find_path()
                 build_end = time.time()
 
-                k = max(0, (build_end - build_start) / 0.1 - 50)
+                k = 0
 
-                await path_topic.post(path)
-                
-                print(client.pose)
-                print(client.current_goal)
-                print(*path if path is not None else "NONE")
+                await path_topic.post(np.asarray(path))
+
+                print(f"[] Built path in {build_end - build_start} seconds")
+
+                prev_goal = client.end_pos
 
     await asyncio.gather(client.run(), run())
 
