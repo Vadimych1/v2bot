@@ -1,25 +1,17 @@
 import cv2
 import asyncio
-import numpy as np
 from asyncio import Queue
 from queue import Queue as SyncQueue
-# from miniros_constants import main as cnst
 from miniros import AsyncROSClient, datatypes
 from miniros.util.decorators import aparsedata, threaded
-# from miniros_slam.source.datatypes import SLAMMap
 from miniros.util.datatypes import Movement, Vector
 
-# import miniros_breezyslam.sensors as sensors # old slam
-# import miniros_breezyslam.algorithms as algos # old slam
-
-from yag_slam.graph_slam import GraphSlam, make_near_scan_visitor
+from yag_slam.graph_slam import GraphSlam
 from yag_slam.scan_matching import Scan2DMatcherCpp
-from yag_slam.graph import do_breadth_first_traversal
-from karto_scanmatcher import create_occupancy_grid, Pose2
+from karto_scanmatcher import Pose2
 from yag_slam.models import LocalizedRangeScan
-from yag_slam.splicing import map_to_graph
 from tiny_tf.tf import Transform
-from tiny_tf.transformations import euler_from_quaternion, quaternion_from_euler
+from tiny_tf.transformations import quaternion_from_euler
 
 
 def movement2pose(msg: Movement) -> Pose2:
@@ -44,15 +36,6 @@ class SLAMClient(AsyncROSClient):
 
         self.mapper = None
         self.last_pose = Movement(Vector(0, 10, 0), Vector(0, 0, 0))
-        self.scans = []
-
-        # self.slam = algos.RMHC_SLAM(
-        #     sensors.RPLidarA1(),
-        #     cnst.MAP_SIZE_PX,
-        #     cnst.MAP_SIZE_MET,
-        #     hole_width_mm=150,
-        #     # sigma_theta_degrees=5,
-        # )
 
         self.dxy = 0
         self.dtheta = 0

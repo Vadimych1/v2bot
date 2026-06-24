@@ -1,7 +1,8 @@
 #include "MPU6050.h"
+#include <Encoder.h>
 #include <math.h>
 
-#define BUFFER_SIZE 100
+#define BUFFER_SIZE 100 // calibration data
 
 // Pins
 #define PWM_A 10
@@ -12,12 +13,25 @@
 #define BA 12
 #define BB 13
 
+#define ENC_A1 2
+#define ENC_A2 3
+
+#define ENC_B1 4
+#define ENC_B2 5
+
 // Packet vars
 #define PACKET_PING 'P'
 #define PACKET_DATA 'D'
 
-// Speeds
-#define MAX_SPEED 10.0
+// Speeds & encoders
+#define MAX_SPEED 10.0f
+#define PPR 11
+#define GEAR_RATIO 100 // TODO: change that value to real reduction ratio
+#define BASELINE 0.16f
+
+const int TICKS_PER_REV = PPR * GEAR_RATIO;
+const float WHEEL_CIRCUMFERENCE = M_PI * 0.04;
+const float DIST_PER_TICK = WHEEL_CIRCUMFERENCE / ((float) TICKS_PER_REV);
 
 union SpeedsData {
   byte bytes[8];
@@ -28,16 +42,17 @@ union SpeedsData {
 } speedsData;
 
 MPU6050 mpu;
+Encoder encA(ENC_A1, ENC_A2);
+Encoder encB(ENC_B1, ENC_B2);
+
+long aTicks = 0;
+long bTicks = 0;
+unsigned long prevTime = 0;
 
 int16_t ax, ay, az;  // raw acc
 int16_t gx, gy, gz;  // raw gyro
-
-float theta = 0;
-float vel = 0;
-float xy = 0;
-const float dt = 0.01;
-
-unsigned long lastSendTime = 0;
+float x = 0, y = 0, theta = 0;
+uint8_t send_ctr = 0;
 
 void setup() {
   pinMode(AA, OUTPUT);
@@ -60,16 +75,56 @@ void setup() {
   Serial.begin(115200);
 
   mpu.initialize();
-  Serial.println(mpu.testConnection() ? "MPU6050 OK" : "MPU6050 FAIL");
   delay(80);
   calibration();
-
-  lastSendTime = micros();
 }
 
-uint8_t ctr = 0;
 void loop() {
-  // Process incoming data
+  long newATicks = encA.read();
+  long newBTicks = encB.read();
+
+  unsigned long now = micros();
+  float dt = (now - prevTime) / 1e6;
+  if (dt < 0.02) return;
+  prevTime = now;
+
+  send_ctr++;
+
+  long dA = newATicks - aTicks;
+  long dB = newBTicks - bTicks;
+
+  aTicks = newATicks;
+  bTicks = newBTicks;
+
+  float deltaA = dA * DIST_PER_TICK;
+  float deltaB = dB * DIST_PER_TICK;
+
+  float deltaS = (deltaA + deltaB) / 2.0;
+  float deltaTheta = (deltaA - deltaB) / BASELINE;
+
+  float dx = deltaS * cos(theta + deltaTheta / 2);
+  float dy = deltaS * sin(theta + deltaTheta / 2);
+
+  theta += deltaTheta;
+  x += dx;
+  y += dy;
+
+  if (send_ctr == 5) {
+    send_ctr = 0;
+
+    Serial.print(x);
+    Serial.print("\t");
+    Serial.print(y);
+    Serial.print("\t");
+    Serial.println(theta);
+  }
+
+  //// TODO: add a gyro complementary filter
+  // float gyroZ = readGyroZ();
+  // float thetaGyro = thetaGyro + gyroZ * dt;
+  // float alpha = 0.98;
+  // theta = alpha * thetaGyro + (1 - alpha) * theta;
+
   if (Serial.available() > 0) {
     char pktType = Serial.read();
 
@@ -92,39 +147,6 @@ void loop() {
 
   mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
 
-  float accX_f = ((float)ax) / 32768 * 2;
-  float accY_f = ((float)ay) / 32768 * 2;
-  // float accZ_f = ((float)az) / 32768 * 2;
-
-  // float gyrX_f = ((float)gx) / 32768 * 250 / 180 * PI;
-  // float gyrY_f = ((float)gy) / 32768 * 250 / 180 * PI;
-  float gyrZ_f = ((float)gz) / 32768 * 250 / 180 * PI;
-
-  if (speedsData.floats.left == 0.0 && speedsData.floats.right == 0.0) {
-    vel = 0;
-  }
-
-  theta += gyrZ_f * dt;
-  vel += accX_f * dt;  // simplified model: count only X axis movement
-  xy += vel * dt;
-
-  if (ctr >= 20) {
-    Serial.print(theta, 6);
-    Serial.print(",");
-    Serial.print(xy, 6);
-    Serial.print(",");
-    Serial.println(((float) micros() - (float) lastSendTime) / 1000000.0f, 6);
-
-    ctr = 0;
-    theta = 0;
-    xy = 0;
-
-    lastSendTime = micros();
-  }
-
-  ctr += 1;
-
-  delay(10);
 }
 
 void calibration() {
