@@ -2,6 +2,7 @@ from miniros_motor_controller.source.vserial import ArduinoSerial
 from miniros_algorithms.source.inverse_kinematics import CurrentIK
 from miniros.util.decorators import aparsedata
 from miniros import AsyncROSClient, datatypes
+import signal
 import platform
 import asyncio
 import time
@@ -12,7 +13,7 @@ class MotorControllerClient(AsyncROSClient):
         super().__init__("motorcontroller", ip, port, _parse_handlers)
 
         # get port based on system
-        # for testing compability
+        # for testing compatibility
         # TODO: maybe add port definition
         # for MacOS
         port = ""
@@ -26,102 +27,70 @@ class MotorControllerClient(AsyncROSClient):
         self.serial = ArduinoSerial(port, 115200)
         self.last_update = time.time()
         self.ik = CurrentIK(0.15, 0.02)
-        
-        self.serial_sync_lock = asyncio.Lock()
+
+        self.n = 0
 
     @aparsedata(datatypes.Vector)
     async def on_motioncontroller_cmdvel(self, data: datatypes.Vector):
         self.last_update = time.time()
 
-        # calculate speeds based on values
         v, w = data.x, data.y
         l, r = self.ik.calculate_wheel_speeds(v, w)
-        
-        await self.serial_sync_lock.acquire()
-        self.serial.send_floats(l, r)
-        self.serial_sync_lock.release()
+
+        await self.serial.set_speeds(l, r)
+
+    @aparsedata(datatypes.Movement)
+    async def on_slam_pose(self, data: datatypes.Movement):
+        self.n += 1
+
+        if self.n % 3 == 0:
+            x, y = data.pos.x, data.pos.y
+            theta = data.ang.z
+
+            await self.serial.reset_position(x, y, theta)
 
 
 async def main():
     client = MotorControllerClient()
-    client.serial.run_deltas_fetch()
+
+    async def shutdown(sig, frame):
+        await client.serial.close()
 
     async def run():
         await client.wait()
 
         odometry_topic = await client.topic("odometry", datatypes.Vector)
+        speeds_topic = await client.topic("velocity", datatypes.Vector)
 
-        async def odometry_fetch():
-            while True:
-                x, y, t = await client.serial.odometry_queue.get()
-                await odometry_topic.post(datatypes.Vector(x, y, t))
+        while True:
+            x, y, t, v, w = await client.serial.odometry_speeds_queue.get()
 
-        async def crash_prevent():
-            while True:
-                await asyncio.sleep(0.1)
+            await odometry_topic.post(datatypes.Vector(x, y, t))
+            await speeds_topic.post(datatypes.Vector(v, w, 0))
 
-                # time limit from last speeds
-                # update to prevent crashes
-                if time.time() - client.last_update > 1.0:
-                    await client.serial_sync_lock.acquire()
-                    client.serial.send_floats(0, 0)
-                    client.serial_sync_lock.release()
+    async def crash_prevent():
+        while True:
+            await asyncio.sleep(0.1)
 
+            # time limit from last speeds
+            # update to prevent crashes
+            if time.time() - client.last_update > 0.5:
+                await client.serial.set_speeds(0, 0)
 
-        odometry_task = asyncio.create_task(odometry_fetch())
-        crash_prevent_task = asyncio.create_task(crash_prevent())
+    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
 
+    try:
         await asyncio.gather(
-            odometry_task,
-            crash_prevent_task,
+            client.run(),
+            crash_prevent(),
+            client.serial.fetch_task(),
+            run(),
         )
 
-
-    await asyncio.gather(
-        client.run(),
-        run(),
-    )
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-# # TEST:
-# client = MotorControllerClient()
-# client.serial.run_deltas_fetch()
-
-# import time
-# # for i in range(40):
-# #     time.sleep(0.5)
-    
-# #     while len(client.serial.odometry_queue) > 0:
-# #         dat = client.serial.odometry_queue.popleft()
-# #         print(dat)
-
-
-# while True:
-#     k = input()
-    
-#     if k == "w":
-#         client.serial.send_floats(4.0, 4.0)
-#         time.sleep(0.5)
-#         client.serial.send_floats(0.0, 0.0)
-
-#     elif k == "s":
-#         client.serial.send_floats(-4.0, -4.0)
-#         time.sleep(0.5)
-#         client.serial.send_floats(0.0, 0.0)
-
-#     elif k == "a":
-#         client.serial.send_floats(-4.0, 4.0)
-#         time.sleep(0.2)
-#         client.serial.send_floats(0.0, 0.0)
-
-#     elif k == "d":
-#         client.serial.send_floats(4.0, -4.0)
-#         time.sleep(0.2)
-#         client.serial.send_floats(0.0, 0.0)
-
-#     elif k == "q":
-#         client.serial.send_floats(0.0, 0.0)
-#         quit(0)

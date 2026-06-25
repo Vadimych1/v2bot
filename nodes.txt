@@ -5,7 +5,7 @@ NOTE: @ is ANON receive, / is TOPIC SEND
 @ping (None)
 
 - slam
-/topic/map (slam/NumpyArray)
+/topic/map (slam/SLAMOffsetMap)
 /topic/pose (miniros/Movement)
 
 - pathplanner
@@ -15,7 +15,8 @@ NOTE: @ is ANON receive, / is TOPIC SEND
 /cmdvel (miniros/Vector) (left, right, none)
 
 - goalmanager
-/currentgoal (miniros/Vector)
+/currentgoal (miniros/Vector) (x, y, 0)
 
 - motorcontroller
-/odometry (miniros/Vector) (dxy, dtheta, dt)
+/odometry (miniros/Vector) (x, y, theta)
+/velocity (miniros/Vector) (v, omega, 0)

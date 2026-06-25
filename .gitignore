@@ -2,3 +2,5 @@
 .vscode
 **/__pycache__/
 src/slam/breezyslam
+log.txt
+response.md

@@ -1,5 +1,4 @@
 from miniros.util.datatypes import Movement, NumpyArray, Vector
-from miniros_algorithms.source.pathtracking import PID
 from miniros_slam.source.datatypes import SLAMOffsetMap
 from miniros.util.decorators import aparsedata
 from miniros import AsyncROSClient
@@ -9,16 +8,28 @@ import asyncio
 
 
 class MotionControllerConfig:
-    def __init__(self, max_linear_speed: float = 1.0, min_linear_speed: float = -1.0,
-            max_angular_speed: float = 1.0, max_linear_accel: float = 0.5,
-            max_angular_accel: float = 1.0, dt: float = 0.1, predict_time: float = 2.0,
-            num_samples: int = 20, robot_radius: float = 0.4, weight_heading: float = 0.5,
-            weight_dist: float = 0.2, weight_speed: float = 0.4, weight_obstacle: float = 0.5,
-            goal_tolerance: float = 0.2, lookahead_distance: float = 2.5):
+    def __init__(
+        self,
+        max_linear_speed: float = 1.0,
+        min_linear_speed: float = -1.0,
+        max_angular_speed: float = 1.0,
+        max_linear_accel: float = 0.5,
+        max_angular_accel: float = 1.0,
+        dt: float = 0.1,
+        predict_time: float = 2.0,
+        num_samples: int = 20,
+        robot_radius: float = 0.4,
+        weight_heading: float = 0.5,
+        weight_dist: float = 0.2,
+        weight_speed: float = 0.4,
+        weight_obstacle: float = 0.5,
+        goal_tolerance: float = 0.2,
+        lookahead_distance: float = 2.5,
+    ):
         self.max_linear_speed = max_linear_speed
         self.min_linear_speed = min_linear_speed
         self.max_angular_speed = max_angular_speed
-        
+
         self.max_linear_accel = max_linear_accel
         self.max_angular_accel = max_angular_accel
 
@@ -34,6 +45,7 @@ class MotionControllerConfig:
 
         self.goal_tolerance = goal_tolerance
         self.lookahead_distance = lookahead_distance
+
 
 class MotionController(AsyncROSClient):
     """
@@ -51,14 +63,20 @@ class MotionController(AsyncROSClient):
     Predicts current position based on speed integration and autocorrects
     """
 
-    def __init__(self, config: MotionControllerConfig, ip="localhost", port=3000, _parse_handlers=True):
+    def __init__(
+        self,
+        config: MotionControllerConfig,
+        ip="localhost",
+        port=3000,
+        _parse_handlers=True,
+    ):
         super().__init__("motioncontroller", ip, port, _parse_handlers)
 
         self.config = config
 
         # grid map retrieved from slam
         self.grid = None
-        
+
         # map size in pixels
         self.width = 0
         self.height = 0
@@ -67,7 +85,7 @@ class MotionController(AsyncROSClient):
         # in pixels
         self.offset_x = 0
         self.offset_y = 0
-        
+
         # map resolution (meters per pixel)
         self.resolution = 1
 
@@ -96,18 +114,18 @@ class MotionController(AsyncROSClient):
         py = int(wy / self.resolution + self.offset_y)
 
         return px, py
-    
+
     def _is_collision(self, x: float, y: float):
         if self.grid is None:
             return False
-        
+
         radius_px = self.config.robot_radius / self.resolution
         px, py = self._world_to_pixel(x, y)
         h, w = self.height, self.width
 
         if px < 0 or px >= w or py < 0 or py >= h:
             return True
-        
+
         step = max(1, int(radius_px / 2))
         for dx in range(-step, step + 1):
             for dy in range(-step, step + 1):
@@ -116,30 +134,30 @@ class MotionController(AsyncROSClient):
                     iy = py + dy
                     if ix < 0 or ix >= w or iy < 0 or iy >= h:
                         return True
-                    
+
                     if self.grid[iy, ix] < 90:
                         return True
-        
+
         return False
-    
+
     def _find_closest_path_idx(self):
         if self.global_path is None:
             return 0
-        
-        min_dist = float('inf')
+
+        min_dist = float("inf")
         idx = 0
         for i, (px, py) in enumerate(self.global_path):
             d = np.hypot(px - self.robot_x, py - self.robot_y)
             if d < min_dist:
                 min_dist = d
                 idx = i
-        
+
         return idx
-    
+
     def _get_target_point(self):
         if self.global_path is None:
             return (self.robot_x, self.robot_y)
-        
+
         if self.target_idx >= len(self.global_path):
             self.target_idx = len(self.global_path) - 1
 
@@ -152,8 +170,12 @@ class MotionController(AsyncROSClient):
             seg_dist = np.hypot(nx - px, ny - py)
 
             if cumulative_dist + seg_dist >= self.config.lookahead_distance:
-                frac = (self.config.lookahead_distance - cumulative_dist) / seg_dist if seg_dist > 0 else 0
-                
+                frac = (
+                    (self.config.lookahead_distance - cumulative_dist) / seg_dist
+                    if seg_dist > 0
+                    else 0
+                )
+
                 target_x = px + frac * (nx - px)
                 target_y = py + frac * (ny - py)
 
@@ -163,7 +185,7 @@ class MotionController(AsyncROSClient):
             idx += 1
 
         return self.global_path[-1]
-    
+
     def _simulate_trajectory(self, v: float, w: float):
         states = []
         x, y, theta = self.robot_x, self.robot_y, self.robot_heading
@@ -176,15 +198,17 @@ class MotionController(AsyncROSClient):
             states.append((x, y, theta))
 
         return states
-    
-    def _evaluate_trajectory(self, states: list[tuple[float, float, float]], v: float, w: float):
+
+    def _evaluate_trajectory(
+        self, states: list[tuple[float, float, float]], v: float, w: float
+    ):
         if len(states) <= 0:
-            return float('inf')
-        
-        for (x, y, _) in states:
+            return float("inf")
+
+        for x, y, _ in states:
             if self._is_collision(x, y):
-                return float('inf')
-            
+                return float("inf")
+
         target_x, target_y = self._get_target_point()
         dx = target_x - states[-1][0]
         dy = target_y - states[-1][1]
@@ -194,16 +218,18 @@ class MotionController(AsyncROSClient):
         heading_cost = self.config.weight_heading * heading_error
 
         dist_to_target = np.hypot(states[-1][0] - target_x, states[-1][1] - target_y)
-        dist_cost = self.config.weight_dist * (dist_to_target / (self.config.lookahead_distance + 1.0))
+        dist_cost = self.config.weight_dist * (
+            dist_to_target / (self.config.lookahead_distance + 1.0)
+        )
 
         speed_cost = -abs(self.config.weight_speed * v)
 
         obstacle_cost = 0.0
         h, w = self.height, self.width
         count_radius = 6
-        for (x, y, _) in states:
+        for x, y, _ in states:
             px, py = self._world_to_pixel(x, y)
-            
+
             x_min = max(0, px - count_radius)
             x_max = min(w, px + count_radius + 1)
             y_min = max(0, py - count_radius)
@@ -220,38 +246,61 @@ class MotionController(AsyncROSClient):
         total_cost = heading_cost + dist_cost + speed_cost + obstacle_cost
 
         return total_cost
-    
+
     def _normalize_angle(self, angle: float):
         while angle > np.pi:
             angle -= 2.0 * np.pi
-        
+
         while angle < -np.pi:
             angle += 2.0 * np.pi
 
         return angle
-    
+
     def compute_control(self):
-        if self.grid is None or self.global_path is None:
+        if self.grid is None or self.global_path is None or len(self.global_path) == 0:
             return 0.0, 0.0
-        
+
+        # if we are close to the target
+        last_x, last_y = self.global_path[-1]
+        if (
+            np.hypot(self.robot_x - last_x, self.robot_y - last_y)
+            < self.config.goal_tolerance
+        ):
+            return 0.0, 0.0
+
         if self.target_idx < len(self.global_path) - 1:
             target_x, target_y = self.global_path[self.target_idx]
 
-            if np.hypot(target_x - self.robot_x, target_y - self.robot_y) < self.config.goal_tolerance:
+            if (
+                np.hypot(target_x - self.robot_x, target_y - self.robot_y)
+                < self.config.goal_tolerance
+            ):
                 self.target_idx += 1
                 if self.target_idx >= len(self.global_path):
                     self.target_idx = len(self.global_path)
-        
-        v_min = max(self.config.min_linear_speed, self.current_v - self.config.max_linear_accel * self.config.dt)
-        v_max = min(self.config.max_linear_speed, self.current_v + self.config.max_linear_accel * self.config.dt)
 
-        w_min = max(-self.config.max_angular_speed, self.current_w - self.config.max_angular_accel * self.config.dt)
-        w_max = min(self.config.max_angular_speed, self.current_w + self.config.max_angular_accel * self.config.dt)
+        v_min = max(
+            self.config.min_linear_speed,
+            self.current_v - self.config.max_linear_accel * self.config.dt,
+        )
+        v_max = min(
+            self.config.max_linear_speed,
+            self.current_v + self.config.max_linear_accel * self.config.dt,
+        )
+
+        w_min = max(
+            -self.config.max_angular_speed,
+            self.current_w - self.config.max_angular_accel * self.config.dt,
+        )
+        w_max = min(
+            self.config.max_angular_speed,
+            self.current_w + self.config.max_angular_accel * self.config.dt,
+        )
 
         v_samples = np.linspace(v_min, v_max, self.config.num_samples)
         w_samples = np.linspace(w_min, w_max, self.config.num_samples)
 
-        best_cost = float('inf')
+        best_cost = float("inf")
         best_v = 0.0
         best_w = 0.0
         # best_trajectory = None
@@ -266,84 +315,14 @@ class MotionController(AsyncROSClient):
                     best_v = v
                     best_w = w
                     # best_trajectory = states
-        
-        if best_cost == float('inf'):
+
+        if best_cost == float("inf"):
             return 0.0, 0.0
 
         return best_v, best_w
 
-    # PID-based approach
-
-    # def _normalize_angle(self, angle: float):
-    #     while angle > np.pi:
-    #         angle -= 2.0 * np.pi
-
-    #     while angle < -np.pi:
-    #         angle += 2.0 * np.pi
-
-    #     return angle
-    
-    # def _find_closest_point_idx(self):
-    #     if self.global_path is None: return -1
-
-    #     min_dist = float('inf')
-    #     closest_idx = 0
-
-    #     for i, (px, py) in enumerate(self.global_path):
-    #         d = np.hypot(px - self.robot_x, py - self.robot_y)
-    #         if d < min_dist:
-    #             min_dist = d
-    #             closest_idx = i
-        
-    #     return closest_idx
-    
-    # def compute_control(self):
-    #     if self.global_path is None:
-    #         return 0.0, 0.0
-
-    #     if self.target_idx is None:
-    #         self.target_idx = self._find_closest_point_idx()
-
-    #     if self.target_idx >= len(self.global_path):
-    #         return 0.0, 0.0
-        
-    #     target_x, target_y = self.global_path[self.target_idx]
-    #     distance = np.hypot(target_x - self.robot_x, target_y - self.robot_y)
-
-    #     if distance <= self.config.goal_tolerance:
-    #         self.target_idx += 1
-
-    #         self._integral_error = 0.0
-    #         self._prev_error = 0.0
-
-    #         if self.target_idx >= len(self.global_path):
-    #             return 0.0, 0.0
-
-    #         target_x, target_y = self.global_path[self.target_idx]
-    #         distance = np.hypot(target_x - self.robot_x, target_y - self.robot_y)
-
-    #     desired_angle = np.atan2(target_y - self.robot_y, target_x - self.robot_x)
-    #     error = self._normalize_angle(desired_angle - self.robot_heading)
-
-    #     self._integral_error += error
-    #     self._integral_error = np.clip(self._integral_error, -1, 1)
-
-    #     derivative = error - self._prev_error
-    #     self._prev_error = error
-
-    #     angular_speed = self.Kp * error + self.Ki * self._integral_error + self.Kd * derivative
-    #     angular_speed = np.clip(angular_speed, -self.config.max_angular_speed, self.config.max_angular_speed)
-
-    #     angle_factor = max(0.1, 1.0 - abs(error) / np.pi)
-    #     dist_factor = min(1.0, max(0.6, distance / 2))
-
-    #     linear_speed = self.config.max_linear_speed * angle_factor * dist_factor
-    #     linear_speed = np.clip(linear_speed, 0, self.config.max_linear_speed)
-
-    #     return linear_speed, angular_speed
-
     @aparsedata(SLAMOffsetMap)
-    async def on_slam_map(self, map): # SLAMOffsetMap
+    async def on_slam_map(self, map):  # SLAMOffsetMap
         self.grid = map.grid
         self.width = map.width
         self.height = map.height
@@ -361,6 +340,11 @@ class MotionController(AsyncROSClient):
     async def on_pathplanner_globalpath(self, path: np.ndarray):
         self.global_path = path
 
+    @aparsedata(Vector)
+    async def on_motorcontroller_velocity(self, velocity: Vector):
+        self.current_v = velocity.x
+        self.current_w = velocity.y
+
 
 async def main():
     client = MotionController(
@@ -368,7 +352,7 @@ async def main():
             # TODO: add speeds from odometry and remove these lines
             # (set current_v and current_w)
             max_angular_accel=10000,
-            max_linear_accel=10000
+            max_linear_accel=10000,
         )
     )
 

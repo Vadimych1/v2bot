@@ -1,7 +1,7 @@
 from asyncio import Queue
 import cv2
 import asyncio
-from queue import Queue as SyncQueue
+from queue import Queue as SyncQueue, Empty
 from miniros import AsyncROSClient, datatypes
 from miniros.util.decorators import aparsedata, threaded
 from miniros_slam.source.datatypes import SLAMOffsetMap
@@ -54,7 +54,11 @@ class SLAMClient(AsyncROSClient):
             16
         )  # SyncQueue[tuple[datatypes.LidarDatatype, datatypes.Movement]]
         self.pos_queue: Queue[datatypes.Movement] = Queue(16)
-        self.map_queue: Queue[bool] = Queue(16)
+        self.map_queue: Queue[tuple] = Queue(16)
+
+        self._map_counter = 0
+
+        self.running = asyncio.Event()
 
     def _setup_mapper(self):
         seq_scan_matcher_config = {
@@ -113,12 +117,25 @@ class SLAMClient(AsyncROSClient):
         image[full] = 0
         image[empty] = 255
 
-        return grid.image, grid.width, grid.height, grid.offset.x, grid.offset.y, resolution
+        return (
+            grid.image,
+            grid.width,
+            grid.height,
+            grid.offset.x,
+            grid.offset.y,
+            resolution,
+        )
 
     @threaded()
     def process_scans(self):
-        while True:
-            _d = self.scan_queue.get()
+        self.running.set()
+
+        while self.running.is_set():
+            try:
+                _d = self.scan_queue.get(timeout=3)
+
+            except Empty:
+                continue
 
             scan = _d[0]  # datatypes.LidarDatatype
             pose: Vector = _d[1]
@@ -145,27 +162,37 @@ class SLAMClient(AsyncROSClient):
 
             res, closed = self.mapper.process_scan(data)
 
-            try:
-                self.pos_queue.put_nowait(pose2movement(res.best_pose))
-            except Exception as e:
-                pass
+            if res is None or res.best_pose in None:
+                return
 
-            try:
-                self.map_queue.put_nowait(True)
-            except Exception as e:
-                pass
+            if self.pos_queue.full():
+                for _ in range(int(self.pos_queue.maxsize)):
+                    self.pos_queue.get_nowait()
+
+            if self.map_queue.full():
+                for _ in range(int(self.map_queue.maxsize)):
+                    self.map_queue.get_nowait()
+
+            self.pos_queue.put_nowait(pose2movement(res.best_pose))
+
+            # TODO: check how well does MiniROS work under high loads
+            # if self._map_counter % 3 == 0:
+            self.map_queue.put_nowait(self._make_map())
+
+            self._map_counter += 1
 
     @aparsedata(datatypes.LidarDatatype)
     async def on_lidar_lidar(self, data):  # datatypes.LidarDatatype
+        if self.scan_queue.full():
+            for _ in range(int(self.scan_queue.maxsize / 2)):
+                self.scan_queue.get_nowait()
+
         self.scan_queue.put((data, self.last_pose))
 
         await self.anon("lidar", "ping", b"hi")
 
     @aparsedata(datatypes.Vector)
     async def on_motorcontroller_odometry(self, data: datatypes.Vector):
-        # self.dxy += data.x
-        # self.dtheta += data.y
-        # self.dt += data.z
         self.last_pose = data
 
 
@@ -178,7 +205,7 @@ async def main():
 
         pos_topic = await client.topic("pose", Movement)
 
-        while True:
+        while client.running.is_set():
             pos = await client.pos_queue.get()
             await pos_topic.post(pos)
 
@@ -187,31 +214,25 @@ async def main():
 
         map_topic = await client.topic("map", SLAMOffsetMap)
 
-        n = 0
-        while True:
-            _ = await client.map_queue.get()
-            n += 1
+        while client.running.is_set():
+            grid, width, height, ofs_x, ofs_y, resolution = await client.map_queue.get()
 
-            if n % 3 == 0:
-                grid, width, height, ofs_x, ofs_y, resolution = client._make_map()
+            # "grid": NumpyArray,
+            # "width": Int,
+            # "height": Int,
+            # "offset_x": Int,
+            # "offset_y": Int,
+            # "resolution": Float,
+            _map = SLAMOffsetMap(
+                grid=grid,
+                width=width,
+                height=height,
+                offset_x=-int(ofs_x / resolution),  # offset is negative because
+                offset_y=-int(ofs_y / resolution),  # it is given in world coordinates
+                resolution=resolution,
+            )
 
-                # "grid": NumpyArray,
-                # "width": Int,
-                # "height": Int,
-                # "offset_x": Int,
-                # "offset_y": Int,
-                # "resolution": Float,
-                _map = SLAMOffsetMap(
-                    grid = grid,
-                    width = width,
-                    height = height,
-                    offset_x = -int(ofs_x / resolution), # offset is negative because  
-                    offset_y = -int(ofs_y / resolution), # it is given in world coordinates
-                    resolution = resolution
-                )
-
-                await map_topic.post(_map)
-                cv2.imwrite("map.png", grid)
+            await map_topic.post(_map)
 
     async def run():
         await client.wait()

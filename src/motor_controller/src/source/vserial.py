@@ -1,73 +1,54 @@
+from asyncio import Queue, Event
 import threading
-import serial
-import struct
+import wireio
 import time
-from asyncio import Queue
 
 
 class ArduinoSerial:
     def __init__(self, port, baudrate=115200):
         """Initialize serial connection"""
-        self.serial = serial.Serial(port, baudrate, timeout=1)
+        self.serial = wireio.AsyncSerial(port, baudrate, timeout=1)
+        self.odometry_speeds_queue = Queue(100)
+        
+        self.running = Event()
 
-        self.fetch_thread = None
-        self.running = threading.Lock()
+        time.sleep(2)  # Wait for Arduino to connect
 
-        self.odometry_queue = Queue(100)
+    # def _sound_startup(self):
+    #     self.send_floats(0.4, 0.4)
+    #     time.sleep(0.05)
+    #     self.send_floats(0.0, 0.0)
+    #     time.sleep(0.05)
+    #     self.send_floats(0.4, 0.4)
+    #     time.sleep(0.05)
+    #     self.send_floats(0.0, 0.0)
+    #     time.sleep(0.05)
 
-        time.sleep(2)  # Wait for Arduino to reset
+    async def set_speeds(self, left: float, right: float):
+        data = f"S {left:.4f} {right:.4f}"
+        await self.serial.write(data.encode())
 
-    def _sound_startup(self):
-        self.send_floats(0.4, 0.4)
-        time.sleep(0.05)
-        self.send_floats(0.0, 0.0)
-        time.sleep(0.05)
-        self.send_floats(0.4, 0.4)
-        time.sleep(0.05)
-        self.send_floats(0.0, 0.0)
-        time.sleep(0.05)
+    async def reset_position(self, newX: float, newY: float, newTheta: float):
+        data = f"R {newX:.4f} {newY:.4f} {newTheta:.4f}"
+        await self.serial.write(data.encode())
 
-    # def send_ping(self):
-    #     """Send PING signal"""
-    #     # PING packet format: 'P' (1 byte)
-    #     packet = b'P'
-    #     self.serial.write(packet)
-    #     print("PING sent")
+    async def fetch_one(self):
+        data = await self.serial.read_until(b"\n")
 
-    #     # Wait for response
-    #     if response := self.serial.readline().decode().strip():
-    #         print(f"Arduino response: {response}")
-    #         return True
+        l = data.decode().strip().split(" ")
+        l = list(map(float, l))
 
-    #     return False
+        if self.odometry_speeds_queue.full():
+            for _ in range(int(self.odometry_speeds_queue.maxsize / 2)):
+                await self.odometry_speeds_queue.get()
 
-    def send_floats(self, float1, float2):
-        """Send two float values"""
-        # 'D' (1 byte) + left (float / 4 bytes) + float2 (float / 4 bytes)
-        header = b"D"
-        data = struct.pack("<ff", float1, float2)
+        await self.odometry_speeds_queue.put(l)
 
-        self.serial.write(header + data)
+    async def fetch_task(self):
+        self.running.set()
+        while self.running.is_set():
+            await self.fetch_one()
 
-    def _deltas_fetch(self):
-        while self.running.locked():
-            try:
-                l = self.serial.readline().decode().strip().split("\t")
-                l = list(map(float, l))
-
-                self.odometry_queue.put_nowait(l)
-
-            except Exception as e:
-                print(e)
-                
-
-    def run_deltas_fetch(self):
-        self.fetch_thread = threading.Thread(target=self._deltas_fetch, daemon=True)
-        print("Started thread" if self.running.acquire(False) else "Failed to start")
-        self.fetch_thread.start()
-
-    def close(self):
+    async def close(self):
         """Close serial connection"""
-        self.serial.close()
-        self.running.release()
-        self.fetch_thread.join()
+        await self.serial.close()

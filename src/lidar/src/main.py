@@ -1,7 +1,8 @@
-from miniros import AsyncROSClient, datatypes
-import asyncio
+from miniros import AsyncROSClient, datatypes, threaded
 import pyrplidarsdk
 import platform
+import asyncio
+import signal
 import time
 
 
@@ -9,78 +10,89 @@ class LidarClient(AsyncROSClient):
     def __init__(self, ip="localhost", port=3000):
         super().__init__("lidar", ip, port)
 
+        # TODO: configurable ports
         self.lidar = pyrplidarsdk.RplidarDriver(
             port="COM3" if platform.system() == "Windows" else "/dev/lidar",
             baudrate=115200,
         )
 
-        self.lidar.stop_scan()
-
         if not self.lidar.connect():
             print("[] failed to connect")
             exit(1)
 
-        print(self.lidar.get_health())
-        print(self.lidar.get_device_info())
-
         self.last_ping_time = time.time()
+        self.lidar_queue = asyncio.Queue(100)
+        self.running = asyncio.Event()
 
     async def on_ping(self, _, node):
         self.last_ping_time = time.time()
 
-    def iter_scans(self, *args, **kwargs):
-        try:
-            while True:
-                dat = self.lidar.get_scan_data()
+    def iter_scans(self):
+        self.running.set()
 
-                if dat is not None:
-                    yield dat
+        while self.running.is_set():
+            dat = self.lidar.get_scan_data()
 
-                else:
-                    print("[] null")
+            if dat is not None:
+                yield dat
 
-        except Exception as _:
-            print("[e] exception occurred")
-            self.lidar.stop_scan()
+            else:
+                print("[] null")
 
-    def __del__(self):
-        self.lidar.stop_scan()
-        self.lidar.disconnect()
+    @threaded()
+    def scans_job(self):
+        self.lidar.start_scan()
+
+        for angles, distances, quality in self.iter_scans():
+            if not self.lidar_queue.full():
+                self.lidar_queue.put_nowait((angles, distances))
+
+            else:
+                for _ in range(int(self.lidar_queue.maxsize / 2)):
+                    self.lidar_queue.get_nowait()
+
+                self.lidar_queue.put_nowait((angles, distances))
 
 
 async def main():
     client = LidarClient()
+    t = client.scans_job()
+
+    def shutdown(sig, frame):
+        client.running.clear()
+        client.lidar_queue.shutdown(immediate=True)
+
+        client.lidar.stop_scan()
+        client.lidar.disconnect()
+
+        t.join()
 
     async def run():
         await client.wait()
 
         ldr_topic = await client.topic("lidar", datatypes.LidarDatatype)
-        
-        client.lidar.start_scan()
+
         while True:
-            if time.time() - client.last_ping_time > 7.0:
-                await asyncio.sleep(1.0)
+            angles, distances = await client.lidar_queue.get()
 
-            else:
-                # if True:
-                for scan in client.iter_scans():
-                    # radians // meters // %
-                    angles, distances, _quality = scan
+            await ldr_topic.post(
+                datatypes.LidarDatatype(
+                    distances=distances,
+                    angles=angles,
+                )
+            )
 
-                    await ldr_topic.post(
-                        datatypes.LidarDatatype(
-                            distances,
-                            angles,
-                        )
-                    )
+    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
 
-                    if time.time() - client.last_ping_time > 7.0:
-                        break
+    try:
+        await asyncio.gather(
+            client.run(),
+            run(),
+        )
 
-    await asyncio.gather(
-        client.run(),
-        run(),
-    )
+    except (KeyboardInterrupt, asyncio.QueueShutDown):
+        pass
 
 
 if __name__ == "__main__":
