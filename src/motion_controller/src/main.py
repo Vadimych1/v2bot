@@ -19,11 +19,11 @@ class MotionControllerConfig:
         predict_time: float = 2.0,
         num_samples: int = 20,
         robot_radius: float = 0.4,
-        weight_heading: float = 0.5,
-        weight_dist: float = 0.2,
-        weight_speed: float = 0.4,
-        weight_obstacle: float = 0.5,
-        goal_tolerance: float = 0.2,
+        weight_heading: float = 0.06,
+        weight_dist: float = 0.34,
+        weight_speed: float = 0.48,
+        weight_obstacle: float = 0.48,
+        goal_tolerance: float = 0.4,
         lookahead_distance: float = 2.5,
     ):
         self.max_linear_speed = max_linear_speed
@@ -101,13 +101,6 @@ class MotionController(AsyncROSClient):
         # global path from path_planner
         self.global_path = None
         self.target_idx = 0
-
-        # self.Kp = 1.2
-        # self.Ki = 0.0
-        # self.Kd = 0.1
-
-        self._integral_error = 0.0
-        self._prev_error = 0.0
 
     def _world_to_pixel(self, wx: float, wy: float):
         px = int(wx / self.resolution + self.offset_x)
@@ -222,12 +215,20 @@ class MotionController(AsyncROSClient):
             dist_to_target / (self.config.lookahead_distance + 1.0)
         )
 
-        speed_cost = -abs(self.config.weight_speed * v)
+        # reward speed, moving backwards is allowed to
+        speed_cost = -self.config.weight_speed * ((v if v >= 0 else -v * 0.2) + abs(w) / 2)
+
+        if v <= 0.08:
+            speed_cost += 0.08 / (abs(v) + 0.00001)
 
         obstacle_cost = 0.0
         h, w = self.height, self.width
-        count_radius = 6
-        for x, y, _ in states:
+        count_radius = 2
+        for i, (x, y, _) in enumerate(states[::-1]):
+            # skip every second value for perfomance
+            if i % 2 == 1:
+                continue
+
             px, py = self._world_to_pixel(x, y)
 
             x_min = max(0, px - count_radius)
@@ -235,12 +236,14 @@ class MotionController(AsyncROSClient):
             y_min = max(0, py - count_radius)
             y_max = min(h, py + count_radius + 1)
 
+            area = (x_max - x_min) * (y_max - y_min)
+
             window = self.grid[y_min:y_max, x_min:x_max]
-            fill = np.sum(window == 0)
+            fill = np.sum(window < 90) / area
 
-            obstacle_cost += fill
+            obstacle_cost += fill * (i + 1) / len(states)
 
-        # TODO: implement weight cost
+        # normalize obstacle cost
         obstacle_cost = self.config.weight_obstacle * obstacle_cost
 
         total_cost = heading_cost + dist_cost + speed_cost + obstacle_cost
@@ -269,6 +272,11 @@ class MotionController(AsyncROSClient):
             return 0.0, 0.0
 
         if self.target_idx < len(self.global_path) - 1:
+            closest_idx = self._find_closest_path_idx()
+
+            if closest_idx > self.target_idx:
+                self.target_idx = closest_idx
+
             target_x, target_y = self.global_path[self.target_idx]
 
             if (
@@ -278,6 +286,7 @@ class MotionController(AsyncROSClient):
                 self.target_idx += 1
                 if self.target_idx >= len(self.global_path):
                     self.target_idx = len(self.global_path)
+
 
         v_min = max(
             self.config.min_linear_speed,
@@ -339,6 +348,7 @@ class MotionController(AsyncROSClient):
     @aparsedata(NumpyArray)
     async def on_pathplanner_globalpath(self, path: np.ndarray):
         self.global_path = path
+        self.target_idx = 0
 
     @aparsedata(Vector)
     async def on_motorcontroller_velocity(self, velocity: Vector):

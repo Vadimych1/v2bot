@@ -7,8 +7,6 @@ from miniros.util.decorators import aparsedata
 from miniros_slam.source.datatypes import SLAMOffsetMap
 from miniros.util.datatypes import Movement, Vector, NumpyArray
 
-# from miniros_algorithms.source.pathfinding import GlobalPathPlanner as GPPAlgo
-
 
 class PathPlanner(AsyncROSClient):
     def __init__(
@@ -25,6 +23,8 @@ class PathPlanner(AsyncROSClient):
         # map size in pixels
         self.width = 0
         self.height = 0
+        self.d_width = 0
+        self.d_height = 0
 
         # (0, 0) offset on map
         # in pixels
@@ -40,14 +40,20 @@ class PathPlanner(AsyncROSClient):
         # target pos (x, y) in meters
         self.end_pos = None
 
+        # world size
+        self.min_x = -7
+        self.min_y = -7
+        self.max_x = 17
+        self.max_y = 17
+
     def _dilate_grid(self) -> bool:
-        if self.grid == None:
+        if self.grid is None:
             return False
 
         robot_r = int(self.robot_radius_m / self.resolution)
 
         kernel = cv.getStructuringElement(
-            cv.MORPH_RECT, (2 * robot_r + 1, 2 * robot_r + 1)
+            cv.MORPH_RECT, (2 * robot_r - 1, 2 * robot_r - 1)
         )
 
         obstacle_mask = (self.grid == 0).astype(np.uint8) * 255
@@ -78,10 +84,12 @@ class PathPlanner(AsyncROSClient):
         px, py = pixel_point
         px, py = int(px), int(py)
 
-        if px < 0 or px >= self.width or py < 0 or py >= self.height:
-            return False
+        # if out-of-bounds, allow to move at most 
+        if px < 0 or px >= self.d_width or py < 0 or py >= self.d_height:
+            wx, wy = self._pixel_to_world(pixel_point)
+            return self.min_x < wx < self.max_x and self.min_y < wy < self.max_y
 
-        if self.dilated_grid != None:
+        if self.dilated_grid is not None:
             return self.dilated_grid[py, px] >= 90
 
         return False
@@ -162,7 +170,7 @@ class PathPlanner(AsyncROSClient):
         return new_x, new_y
 
     def _greedy_shortcut(
-        self, pixel_path: list[tuple[int, int]], max_lookahead: int = 3
+        self, pixel_path: list[tuple[int, int]], max_lookahead: int = 6
     ):
         if len(pixel_path) <= 2:
             return pixel_path
@@ -208,9 +216,13 @@ class PathPlanner(AsyncROSClient):
         if self.grid is None or self.start_pos is None or self.end_pos is None:
             return None
 
-        # preprocess grid using dilation
-        if not self._dilate_grid():
-            return None
+        # # preprocess grid using dilation
+        # if not self._dilate_grid():
+        #     return None
+
+        self.dilated_grid = self.grid
+        self.d_width = self.width
+        self.d_height = self.height
 
         start_pixel = self._world_to_pixel(self.start_pos)
         end_pixel = self._world_to_pixel(self.end_pos)
@@ -228,13 +240,10 @@ class PathPlanner(AsyncROSClient):
 
             return min(step_size * 5, gamma * np.sqrt(np.log(n) / n))
 
-        h = self.height
-        w = self.width
-
         for _ in range(max_iter):
-            rand_x = np.random.uniform(0, w - 1)
-            rand_y = np.random.uniform(0, h - 1)
-            rand_point = (rand_x, rand_y)
+            rand_x = np.random.uniform(self.min_x, self.max_x)
+            rand_y = np.random.uniform(self.min_y, self.max_y)
+            rand_point = self._world_to_pixel((rand_x, rand_y))
 
             nearest_idx = self._nearest(tree, rand_point)
             nearest_node = tree[nearest_idx]
@@ -365,7 +374,7 @@ async def main():
                 )
                 or (
                     k >= 150
-                    and client.start_pos != None
+                    and client.start_pos is not None
                     and client._distance(client.start_pos, client.end_pos) > 1.5
                 )
             )
@@ -382,7 +391,13 @@ async def main():
                 else:
                     await path_topic.post(np.asarray(path))
 
-                print(f"[] Built path in {build_end - build_start} seconds")
+
+                if path is not None:
+                    print(f"[] Built path of length {len(path)} in {build_end - build_start} seconds")
+                    open("path.txt", "w").writelines(str(tuple(x)) for x in path)
+
+                else:
+                    print(f"[] Path failed in {build_end - build_start} seconds")
 
                 prev_goal = client.end_pos
 
