@@ -41,7 +41,7 @@ class PathPlanner(AsyncROSClient):
         self.end_pos = None
 
     def _dilate_grid(self) -> bool:
-        if self.grid == None:
+        if self.grid is None:
             return False
 
         robot_r = int(self.robot_radius_m / self.resolution)
@@ -81,7 +81,7 @@ class PathPlanner(AsyncROSClient):
         if px < 0 or px >= self.width or py < 0 or py >= self.height:
             return False
 
-        if self.dilated_grid != None:
+        if self.dilated_grid is not None:
             return self.dilated_grid[py, px] >= 90
 
         return False
@@ -206,16 +206,21 @@ class PathPlanner(AsyncROSClient):
         """
 
         if self.grid is None or self.start_pos is None or self.end_pos is None:
+            print(f"1 {self.grid is None} {self.start_pos is None} {self.end_pos is None}")
             return None
 
         # preprocess grid using dilation
         if not self._dilate_grid():
+            print("2 d")
             return None
 
         start_pixel = self._world_to_pixel(self.start_pos)
         end_pixel = self._world_to_pixel(self.end_pos)
 
-        if not self._is_free(start_pixel) or not self._is_free(end_pixel):
+        start_free = self._is_free(start_pixel)
+        end_free = self._is_free(end_pixel)
+        if not start_free or not end_free:
+            print(f"3 {start_free} {end_free}")
             return None
 
         tree = [{"pos": start_pixel, "parent": -1, "cost": 0.0}]
@@ -307,7 +312,7 @@ class PathPlanner(AsyncROSClient):
                 path_pixel.reverse()
 
                 # optimize path
-                path_pixel = self._greedy_shortcut(path_pixel)
+                path_pixel = self._greedy_shortcut(path_pixel, max_lookahead=100)
                 path_world = [self._pixel_to_world(p) for p in path_pixel]
 
                 return path_world
@@ -361,12 +366,12 @@ async def main():
                 prev_goal is None
                 or (
                     prev_goal is not None
-                    and client._distance(client.end_pos, prev_goal) > 0.4
+                    and client._distance(client.end_pos, prev_goal) > 0.1
                 )
                 or (
                     k >= 150
-                    and client.start_pos != None
-                    and client._distance(client.start_pos, client.end_pos) > 1.5
+                    and client.start_pos is not None
+                    and client._distance(client.start_pos, client.end_pos) > 1
                 )
             )
 
@@ -377,12 +382,14 @@ async def main():
 
                 k = 0
 
-                if path == None:
+                if path is None:
                     await path_topic.post([])
+                    print(f"[] Failed path in {build_end - build_start} seconds")
+                    
                 else:
                     await path_topic.post(np.asarray(path))
-
-                print(f"[] Built path in {build_end - build_start} seconds")
+                    print(f"[] Built path in {build_end - build_start} seconds")
+                    print(f"\n{path}\n")
 
                 prev_goal = client.end_pos
 

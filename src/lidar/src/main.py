@@ -12,7 +12,7 @@ class LidarClient(AsyncROSClient):
 
         # TODO: configurable ports
         self.lidar = pyrplidarsdk.RplidarDriver(
-            port="COM3" if platform.system() == "Windows" else "/dev/lidar",
+            port="COM3" if platform.system() == "Windows" else "/dev/ttyUSB1",
             baudrate=115200,
         )
 
@@ -44,14 +44,11 @@ class LidarClient(AsyncROSClient):
         self.lidar.start_scan()
 
         for angles, distances, quality in self.iter_scans():
-            if not self.lidar_queue.full():
-                self.lidar_queue.put_nowait((angles, distances))
-
-            else:
+            if self.lidar_queue.full():
                 for _ in range(int(self.lidar_queue.maxsize / 2)):
                     self.lidar_queue.get_nowait()
 
-                self.lidar_queue.put_nowait((angles, distances))
+            self.lidar_queue.put_nowait((angles, distances))
 
 
 async def main():

@@ -12,6 +12,7 @@ from karto_scanmatcher import Pose2
 from yag_slam.models import LocalizedRangeScan
 from tiny_tf.tf import Transform
 from tiny_tf.transformations import quaternion_from_euler
+import time
 
 
 def movement2pose(msg: Movement) -> Pose2:
@@ -62,8 +63,8 @@ class SLAMClient(AsyncROSClient):
 
     def _setup_mapper(self):
         seq_scan_matcher_config = {
-            "angle_variance_penalty": 0.0349,  # 0.349
-            "distance_variance_penalty": 0.03,  # 0.3
+            "angle_variance_penalty": 0.349,
+            "distance_variance_penalty": 0.3,
             "coarse_search_angle_offset": 0.349,
             "coarse_angle_resolution": 0.0349,
             "fine_search_angle_resolution": 0.00349,
@@ -130,7 +131,7 @@ class SLAMClient(AsyncROSClient):
     def process_scans(self):
         self.running.set()
 
-        while self.running.is_set():
+        while self.running.is_set():        
             try:
                 _d = self.scan_queue.get(timeout=3)
 
@@ -162,30 +163,33 @@ class SLAMClient(AsyncROSClient):
 
             res, closed = self.mapper.process_scan(data)
 
-            if res is None or res.best_pose in None:
-                return
+            if res is None or res.best_pose is None:
+                continue
 
             if self.pos_queue.full():
                 for _ in range(int(self.pos_queue.maxsize)):
                     self.pos_queue.get_nowait()
-
+                    
             if self.map_queue.full():
                 for _ in range(int(self.map_queue.maxsize)):
                     self.map_queue.get_nowait()
 
             self.pos_queue.put_nowait(pose2movement(res.best_pose))
-
-            # TODO: check how well does MiniROS work under high loads
-            # if self._map_counter % 3 == 0:
-            self.map_queue.put_nowait(self._make_map())
+            
+            if self._map_counter % 3 == 0:
+                mmap = self._make_map()
+                self.map_queue.put_nowait(mmap)
+                
+                if self._map_counter % 30 == 0:
+                    print(f"[map] {time.time()}")
+                    cv2.imwrite("map.png", mmap[0])
 
             self._map_counter += 1
 
     @aparsedata(datatypes.LidarDatatype)
     async def on_lidar_lidar(self, data):  # datatypes.LidarDatatype
         if self.scan_queue.full():
-            for _ in range(int(self.scan_queue.maxsize / 2)):
-                self.scan_queue.get_nowait()
+            self.scan_queue.get_nowait()
 
         self.scan_queue.put((data, self.last_pose))
 

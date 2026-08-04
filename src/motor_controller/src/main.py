@@ -22,16 +22,15 @@ class MotorControllerClient(AsyncROSClient):
                 port = "COM5"
 
             case _:
-                port = "/dev/arduino"
+                port = "/dev/ttyUSB0"
 
         self.serial = ArduinoSerial(port, 115200)
         self.last_update = time.time()
-        self.ik = CurrentIK(0.15, 0.02)
-
+        self.ik = CurrentIK(0.19, 0.022)
         self.n = 0
-
+    
     @aparsedata(datatypes.Vector)
-    async def on_motioncontroller_cmdvel(self, data: datatypes.Vector):
+    async def on_motioncontroller_cmdvel(self, data: datatypes.Vector):        
         self.last_update = time.time()
 
         v, w = data.x, data.y
@@ -46,15 +45,22 @@ class MotorControllerClient(AsyncROSClient):
         if self.n % 3 == 0:
             x, y = data.pos.x, data.pos.y
             theta = data.ang.z
+            
+            print("SLAM:", x, y, theta)
 
             await self.serial.reset_position(x, y, theta)
-
+            
+    async def open_port(self):
+        await self.serial.serial.open()
+        
 
 async def main():
     client = MotorControllerClient()
+    await client.open_port()
 
     async def shutdown(sig, frame):
         await client.serial.close()
+        quit(0)
 
     async def run():
         await client.wait()
@@ -64,18 +70,20 @@ async def main():
 
         while True:
             x, y, t, v, w = await client.serial.odometry_speeds_queue.get()
+            
+            print("Controller:", x, y, t)
 
             await odometry_topic.post(datatypes.Vector(x, y, t))
             await speeds_topic.post(datatypes.Vector(v, w, 0))
 
-    async def crash_prevent():
-        while True:
-            await asyncio.sleep(0.1)
+    # async def crash_prevent():
+    #     while True:
+    #         await asyncio.sleep(0.1)
 
-            # time limit from last speeds
-            # update to prevent crashes
-            if time.time() - client.last_update > 0.5:
-                await client.serial.set_speeds(0, 0)
+    #         # time limit from last speeds
+    #         # update to prevent crashes
+    #         if time.time() - client.last_update > 0.5:
+    #             await client.serial.set_speeds(0, 0)
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
@@ -83,7 +91,7 @@ async def main():
     try:
         await asyncio.gather(
             client.run(),
-            crash_prevent(),
+            # crash_prevent(),
             client.serial.fetch_task(),
             run(),
         )

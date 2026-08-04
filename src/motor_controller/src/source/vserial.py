@@ -1,5 +1,4 @@
-from asyncio import Queue, Event
-import threading
+from asyncio import Queue, Event, Lock
 import wireio
 import time
 
@@ -11,6 +10,7 @@ class ArduinoSerial:
         self.odometry_speeds_queue = Queue(100)
         
         self.running = Event()
+        self._lock = Lock()
 
         time.sleep(2)  # Wait for Arduino to connect
 
@@ -25,24 +25,36 @@ class ArduinoSerial:
     #     time.sleep(0.05)
 
     async def set_speeds(self, left: float, right: float):
-        data = f"S {left:.4f} {right:.4f}"
-        await self.serial.write(data.encode())
+        data = f"S {left:.4f} {right:.4f}\n"
+        
+        async with self._lock:
+            await self.serial.write(data.encode())
+            await self.serial.flush()
 
     async def reset_position(self, newX: float, newY: float, newTheta: float):
-        data = f"R {newX:.4f} {newY:.4f} {newTheta:.4f}"
-        await self.serial.write(data.encode())
+        data = f"R {newX:.4f} {newY:.4f} {newTheta:.4f}\n"
+        
+        async with self._lock:
+            await self.serial.write(data.encode())
+            await self.serial.flush()
 
     async def fetch_one(self):
-        data = await self.serial.read_until(b"\n")
+        try:
+            async with self._lock:
+                data = await self.serial.read_until(b"\n")
 
-        l = data.decode().strip().split(" ")
-        l = list(map(float, l))
+            l = data.decode().strip().split(" ")
+            l = list(map(float, l))
 
-        if self.odometry_speeds_queue.full():
-            for _ in range(int(self.odometry_speeds_queue.maxsize / 2)):
-                await self.odometry_speeds_queue.get()
+            if self.odometry_speeds_queue.full():
+                for _ in range(int(self.odometry_speeds_queue.maxsize / 2)):
+                    await self.odometry_speeds_queue.get()
+            
+            if len(l) == 5:
+                await self.odometry_speeds_queue.put(l)
 
-        await self.odometry_speeds_queue.put(l)
+        except ValueError:
+            pass
 
     async def fetch_task(self):
         self.running.set()

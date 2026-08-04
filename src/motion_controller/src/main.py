@@ -2,7 +2,6 @@ from miniros.util.datatypes import Movement, NumpyArray, Vector
 from miniros_slam.source.datatypes import SLAMOffsetMap
 from miniros.util.decorators import aparsedata
 from miniros import AsyncROSClient
-from time import time
 import numpy as np
 import asyncio
 
@@ -10,21 +9,21 @@ import asyncio
 class MotionControllerConfig:
     def __init__(
         self,
-        max_linear_speed: float = 1.0,
-        min_linear_speed: float = -1.0,
-        max_angular_speed: float = 1.0,
-        max_linear_accel: float = 0.5,
-        max_angular_accel: float = 1.0,
+        max_linear_speed: float = 0.125,
+        min_linear_speed: float = -0.125,
+        max_angular_speed: float = 1.5,
+        max_linear_accel: float = 1.5,
+        max_angular_accel: float = 2.5,
         dt: float = 0.1,
         predict_time: float = 2.0,
         num_samples: int = 20,
-        robot_radius: float = 0.4,
-        weight_heading: float = 0.5,
-        weight_dist: float = 0.2,
-        weight_speed: float = 0.4,
-        weight_obstacle: float = 0.5,
+        robot_radius: float = 0.22,
+        weight_heading: float = 0.40,
+        weight_dist: float = 0.4,
+        weight_speed: float = 0.3,
+        weight_obstacle: float = 0.55,
         goal_tolerance: float = 0.2,
-        lookahead_distance: float = 2.5,
+        lookahead_distance: float = 2,
     ):
         self.max_linear_speed = max_linear_speed
         self.min_linear_speed = min_linear_speed
@@ -178,14 +177,21 @@ class MotionController(AsyncROSClient):
 
                 target_x = px + frac * (nx - px)
                 target_y = py + frac * (ny - py)
+                
+                print(f"Target: {target_x, target_y}")
 
                 return target_x, target_y
 
             cumulative_dist += seg_dist
             idx += 1
 
-        return self.global_path[-1]
+        try:
+            return self.global_path[-1]
+        
+        except:
+            return (self.robot_x, self.robot_y)
 
+        
     def _simulate_trajectory(self, v: float, w: float):
         states = []
         x, y, theta = self.robot_x, self.robot_y, self.robot_heading
@@ -202,7 +208,7 @@ class MotionController(AsyncROSClient):
     def _evaluate_trajectory(
         self, states: list[tuple[float, float, float]], v: float, w: float
     ):
-        if len(states) <= 0:
+        if self.global_path is None or len(states) <= 0 or self.grid is None:
             return float("inf")
 
         for x, y, _ in states:
@@ -268,17 +274,6 @@ class MotionController(AsyncROSClient):
         ):
             return 0.0, 0.0
 
-        if self.target_idx < len(self.global_path) - 1:
-            target_x, target_y = self.global_path[self.target_idx]
-
-            if (
-                np.hypot(target_x - self.robot_x, target_y - self.robot_y)
-                < self.config.goal_tolerance
-            ):
-                self.target_idx += 1
-                if self.target_idx >= len(self.global_path):
-                    self.target_idx = len(self.global_path)
-
         v_min = max(
             self.config.min_linear_speed,
             self.current_v - self.config.max_linear_accel * self.config.dt,
@@ -330,15 +325,20 @@ class MotionController(AsyncROSClient):
         self.offset_y = map.offset_y
         self.resolution = map.resolution
 
-    @aparsedata(Movement)
-    async def on_slam_pose(self, pose: Movement):
-        self.robot_x = pose.pos.x
-        self.robot_y = pose.pos.y
-        self.robot_heading = pose.ang.z
+    # @aparsedata(Movement)
+    # async def on_slam_pose(self, pose: Movement):
+    #     self.robot_x = pose.pos.x
+    #     self.robot_y = pose.pos.y
+    #     self.robot_heading = pose.ang.z
+    
+    @aparsedata(Vector)
+    async def on_motorcontroller_odometry(self, odom: Vector):
+        self.robot_x, self.robot_y, self.robot_heading = odom.x, odom.y, odom.z
 
     @aparsedata(NumpyArray)
     async def on_pathplanner_globalpath(self, path: np.ndarray):
         self.global_path = path
+        self.target_idx = 0
 
     @aparsedata(Vector)
     async def on_motorcontroller_velocity(self, velocity: Vector):
@@ -347,31 +347,28 @@ class MotionController(AsyncROSClient):
 
 
 async def main():
-    client = MotionController(
-        config=MotionControllerConfig(
-            # TODO: add speeds from odometry and remove these lines
-            # (set current_v and current_w)
-            max_angular_accel=10000,
-            max_linear_accel=10000,
-        )
-    )
+    client = MotionController(config=MotionControllerConfig())
 
     async def run_path_tracker():
         await client.wait()
 
         cmdvel_topic = await client.topic("cmdvel", Vector)
-        prev_v, prev_w = 0, 0
+        # prev_v, prev_w = 0, 0
 
         while True:
             await asyncio.sleep(0.1)
-            v, w = client.compute_control()
+            v, w = await asyncio.to_thread(client.compute_control)
 
-            if prev_v != v or prev_w != w:
-                await cmdvel_topic.post(Vector(v, w, 0))
-                prev_v = v
-                prev_w = w
+            # if prev_v != v or prev_w != w:
+            
+            await cmdvel_topic.post(Vector(v, -w, 0))
+            
+            # prev_v = v
+            # prev_w = w
+                
+    path_track = asyncio.create_task(run_path_tracker())
 
-    await asyncio.gather(client.run(), run_path_tracker())
+    await asyncio.gather(client.run(), path_track)
 
 
 asyncio.run(main())
