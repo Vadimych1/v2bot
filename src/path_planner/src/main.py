@@ -90,7 +90,7 @@ class PathPlanner(AsyncROSClient):
             return self.min_x < wx < self.max_x and self.min_y < wy < self.max_y
 
         if self.dilated_grid is not None:
-            return self.dilated_grid[py, px] >= 90
+            return self.dilated_grid[py, px] >= 40
 
         return False
 
@@ -380,7 +380,7 @@ async def main():
                 or (
                     k >= 150
                     and client.start_pos is not None
-                    and client._distance(client.start_pos, client.end_pos) > 1.5
+                    and client._distance(client.start_pos, client.end_pos) > 0.5
                 )
             )
 
@@ -397,14 +397,22 @@ async def main():
                     
                 else:
                     await path_topic.post(np.asarray(path))
+                    print(f"[] Built path in {build_end - build_start} seconds")
 
-
-                if path is not None:
-                    print(f"[] Built path of length {len(path)} in {build_end - build_start} seconds")
-                    # open("path.txt", "w").writelines(str(tuple(x)) for x in path) # TODO: find a better way of logging paths
-
-                else:
-                    print(f"[] Path failed in {build_end - build_start} seconds")
+                    try:
+                        im = cv.imread("map.png")
+                        for i in range(len(path) - 1):
+                            a, b = path[i], path[i + 1]
+                            
+                            a = client._world_to_pixel(a)
+                            b = client._world_to_pixel(b)
+                            
+                            im = cv.line(im, a, b, 0, 2)
+                            
+                        cv.imwrite("path.png", im)
+                        
+                    except:
+                        pass
 
                 prev_goal = client.end_pos
 

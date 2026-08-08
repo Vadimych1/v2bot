@@ -127,7 +127,7 @@ class MotionController(AsyncROSClient):
                     if ix < 0 or ix >= w or iy < 0 or iy >= h:
                         return True
 
-                    if self.grid[iy, ix] < 90:
+                    if self.grid[iy, ix] < 40:
                         return True
 
         return False
@@ -378,6 +378,8 @@ async def main():
             v, w = await asyncio.to_thread(client.compute_control)
 
             # if prev_v != v or prev_w != w:
+            
+            print(v, w)
             
             await cmdvel_topic.post(Vector(v, -w, 0))
             
