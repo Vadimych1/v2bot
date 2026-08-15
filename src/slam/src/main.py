@@ -79,6 +79,8 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
             continue
 
         pose: Vector = scan.pos
+
+        # todo: check if this line necessary
         ranges, angles = zip(
             *sorted(zip(scan.distances, scan.angles), key=lambda x: x[1])
         )
@@ -196,10 +198,9 @@ class SLAMClient(AsyncROSClient):
             self.slam_proc.join()
 
 
-# TODO: make graceful shutdown
 async def main():
     client = SLAMClient()
-    client._setup_mapper()
+    client.start_slam_process()
 
     # posts last pos at 10hz
     async def post_pos_job():
@@ -234,12 +235,17 @@ async def main():
 
     client.process_scans()
 
-    await asyncio.gather(
-        client.run(),
-        post_map_job(),
-        post_pos_job(),
-        run(),
-    )
+    try:
+        await asyncio.gather(
+            client.run(),
+            client.consume_results(),
+            post_map_job(),
+            post_pos_job(),
+            run(),
+        )
+
+    finally:
+        client.stop()
 
 
 if __name__ == "__main__":
