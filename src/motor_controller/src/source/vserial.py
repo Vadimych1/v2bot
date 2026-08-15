@@ -1,45 +1,50 @@
-from asyncio import Queue, Event
-import serial_asyncio as serial
+from asyncio import Queue, Event, Lock
+import wireio
+import time
 
 
 class ArduinoSerial:
     def __init__(self, port, baudrate=115200):
         """Initialize serial connection"""
-        self.reader, self.writer = None, None
-        self.odometry_speeds_queue = Queue(100)
-        self.running = Event()
-
-        self.port = port
-        self.baudrate = baudrate
+        self.serial = wireio.AsyncSerial(port, baudrate, timeout=1)
+        self.odometry_speeds_queue = Queue(5)
         
-    async def connect(self):
-        self.reader, self.writer = await serial.open_serial_connection(url=self.port, baudrate=self.baudrate)
+        self.running = Event()
+        self._lock = Lock()
+
+        time.sleep(2)  # Wait for Arduino to connect
 
     async def set_speeds(self, left: float, right: float):
-        data = f"S {left:.4f} {right:.4f}"
-        self.writer.write(data.encode())
-        await self.writer.drain()
+        data = f"S {left:.4f} {right:.4f}\n"
+        
+        async with self._lock:
+            await self.serial.write(data.encode())
+            await self.serial.flush()
 
     async def reset_position(self, newX: float, newY: float, newTheta: float):
-        data = f"R {newX:.4f} {newY:.4f} {newTheta:.4f}"
-        self.writer.write(data.encode())
-        await self.writer.drain()
+        data = f"R {newX:.4f} {newY:.4f} {newTheta:.4f}\n"
+        
+        async with self._lock:
+            await self.serial.write(data.encode())
+            await self.serial.flush()
 
     async def fetch_one(self):
-        data = await self.reader.readuntil(b"\n")
-        
         try:
+            async with self._lock:
+                data = await self.serial.read_until(b"\n")
+
             l = data.decode().strip().split(" ")
             l = list(map(float, l))
-        except (ValueError, UnicodeDecodeError) as e:
-            print(e)
-            return
 
-        if self.odometry_speeds_queue.full():
-            for _ in range(int(self.odometry_speeds_queue.maxsize / 2)):
-                await self.odometry_speeds_queue.get()
+            if self.odometry_speeds_queue.full():
+                for _ in range(int(self.odometry_speeds_queue.maxsize / 2)):
+                    await self.odometry_speeds_queue.get()
+            
+            if len(l) == 5:
+                await self.odometry_speeds_queue.put(l)
 
-        await self.odometry_speeds_queue.put(l)
+        except ValueError:
+            pass
 
     async def fetch_task(self):
         self.running.set()
@@ -48,5 +53,4 @@ class ArduinoSerial:
 
     async def close(self):
         """Close serial connection"""
-        self.writer.close()
-        await self.writer.wait_closed()
+        await self.serial.close()

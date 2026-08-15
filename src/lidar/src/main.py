@@ -1,4 +1,4 @@
-from miniros import AsyncROSClient, datatypes, threaded
+from miniros import AsyncROSClient, datatypes, LatestQueue, threaded, aparsedata
 import pyrplidarsdk
 import platform
 import asyncio
@@ -12,7 +12,7 @@ class LidarClient(AsyncROSClient):
 
         # TODO: configurable ports
         self.lidar = pyrplidarsdk.RplidarDriver(
-            port="COM3" if platform.system() == "Windows" else "/dev/lidar",
+            port="COM3" if platform.system() == "Windows" else "/dev/ttyUSB1",
             baudrate=115200,
         )
 
@@ -21,8 +21,12 @@ class LidarClient(AsyncROSClient):
             exit(1)
 
         self.last_ping_time = time.time()
-        self.lidar_queue = asyncio.Queue(100)
+        self.lidar_queue = LatestQueue()
         self.running = asyncio.Event()
+
+        self._loop = asyncio.get_event_loop()
+
+        self.current_position = datatypes.Vector(0, 0, 0)
 
     async def on_ping(self, _, node):
         self.last_ping_time = time.time()
@@ -44,15 +48,11 @@ class LidarClient(AsyncROSClient):
         self.lidar.start_scan()
 
         for angles, distances, quality in self.iter_scans():
-            if not self.lidar_queue.full():
-                self.lidar_queue.put_nowait((angles, distances))
+            asyncio.run_coroutine_threadsafe(self.lidar_queue.put((angles, distances, self.current_position.copy())), self._loop)
 
-            else:
-                for _ in range(int(self.lidar_queue.maxsize / 2)):
-                    self.lidar_queue.get_nowait()
-
-                self.lidar_queue.put_nowait((angles, distances))
-
+    @aparsedata(datatypes.Vector)
+    async def on_motorcontroller_odometry(self, pos: datatypes.Vector):
+        self.current_position = pos
 
 async def main():
     client = LidarClient()
@@ -60,8 +60,6 @@ async def main():
 
     def shutdown(sig, frame):
         client.running.clear()
-        client.lidar_queue.shutdown(immediate=True)
-
         client.lidar.stop_scan()
         client.lidar.disconnect()
 
@@ -73,12 +71,13 @@ async def main():
         ldr_topic = await client.topic("lidar", datatypes.LidarDatatype)
 
         while True:
-            angles, distances = await client.lidar_queue.get()
+            angles, distances, pos = await client.lidar_queue.get()
 
             await ldr_topic.post(
                 datatypes.LidarDatatype(
                     distances=distances,
                     angles=angles,
+                    pos=pos
                 )
             )
 

@@ -12,12 +12,7 @@ from karto_scanmatcher import Pose2
 from yag_slam.models import LocalizedRangeScan
 from tiny_tf.tf import Transform
 from tiny_tf.transformations import quaternion_from_euler
-
-
-def movement2pose(msg: Movement) -> Pose2:
-    t = msg.pos
-    r = msg.ang
-    return Pose2(t.x, t.y, r.z)
+import time
 
 
 def movement2transform(msg: Movement) -> Transform:
@@ -35,16 +30,6 @@ class SLAMClient(AsyncROSClient):
         super().__init__("slam", ip, port)
 
         self.mapper = None
-        self.last_pose = Vector(0, 0, 0)
-        self.scans = []
-
-        # self.slam = algos.RMHC_SLAM(
-        #     sensors.RPLidarA1(),
-        #     cnst.MAP_SIZE_PX,
-        #     cnst.MAP_SIZE_MET,
-        #     hole_width_mm=150,
-        #     # sigma_theta_degrees=5,
-        # )
 
         self.dxy = 0
         self.dtheta = 0
@@ -59,38 +44,39 @@ class SLAMClient(AsyncROSClient):
         self._map_counter = 0
 
         self.running = asyncio.Event()
+        self._loop = asyncio.get_event_loop()
 
     def _setup_mapper(self):
         seq_scan_matcher_config = {
-            "angle_variance_penalty": 0.0349,  # 0.349
-            "distance_variance_penalty": 0.03,  # 0.3
+            "angle_variance_penalty": 0.349,
+            "distance_variance_penalty": 0.3,
             "coarse_search_angle_offset": 0.349,
             "coarse_angle_resolution": 0.0349,
-            "fine_search_angle_resolution": 0.00349,
+            "fine_search_angle_resolution": 0.0174,
             "use_response_expansion": True,
             "range_threshold": 20,
             "minimum_angle_penalty": 0.9,
             "search_size": 1.0,
-            "resolution": 0.01,
+            "resolution": 0.05,
             "smear_deviation": 0.09,
         }
 
         loop_scan_matcher_config = seq_scan_matcher_config.copy()
         loop_scan_matcher_config.update(
             {
-                "search_size": 4.0,
+                "search_size": 2.0,
                 "resolution": 0.05,
                 "smear_deviation": 0.03,
             }
         )
 
-        seq_matcher = Scan2DMatcherCpp(config_dict=seq_scan_matcher_config)
+        seq_matcher = Scan2DMatcherCpp(seq_scan_matcher_config)
         loop_matcher = Scan2DMatcherCpp(loop_scan_matcher_config, loop=True)
 
         self.mapper = GraphSlam(
             seq_matcher,
             loop_matcher,
-            scan_buffer_len=25,
+            scan_buffer_len=10,
             min_response_coarse=0.3,
             min_response_fine=0.4,
         )
@@ -109,13 +95,13 @@ class SLAMClient(AsyncROSClient):
         """
 
         grid = self.mapper.make_occupancy_grid(resolution, 8)
-        image = grid.image
+        # image = grid.image
 
-        full = image < 100
-        empty = image >= 100
+        # full = image < 100
+        # empty = image >= 100
 
-        image[full] = 0
-        image[empty] = 255
+        # image[full] = 0
+        # image[empty] = 255
 
         return (
             grid.image,
@@ -130,16 +116,14 @@ class SLAMClient(AsyncROSClient):
     def process_scans(self):
         self.running.set()
 
-        while self.running.is_set():
+        while self.running.is_set():        
             try:
-                _d = self.scan_queue.get(timeout=3)
+                scan = self.scan_queue.get(timeout=1)
 
             except Empty:
                 continue
 
-            scan = _d[0]  # datatypes.LidarDatatype
-            pose: Vector = _d[1]
-
+            pose: Vector = scan.pos
             ranges, angles = zip(
                 *sorted(zip(scan.distances, scan.angles), key=lambda x: x[1])
             )
@@ -152,7 +136,7 @@ class SLAMClient(AsyncROSClient):
                 start_ang,
                 end_ang,
                 step,
-                0,
+                0.04,
                 20,
                 8,
                 pose.x,
@@ -162,22 +146,26 @@ class SLAMClient(AsyncROSClient):
 
             res, closed = self.mapper.process_scan(data)
 
-            if res is None or res.best_pose in None:
-                return
+            if res is None or res.best_pose is None:
+                continue
 
             if self.pos_queue.full():
                 for _ in range(int(self.pos_queue.maxsize)):
                     self.pos_queue.get_nowait()
-
+                    
             if self.map_queue.full():
                 for _ in range(int(self.map_queue.maxsize)):
                     self.map_queue.get_nowait()
 
-            self.pos_queue.put_nowait(pose2movement(res.best_pose))
-
-            # TODO: check how well does MiniROS work under high loads
-            # if self._map_counter % 3 == 0:
-            self.map_queue.put_nowait(self._make_map())
+            asyncio.run_coroutine_threadsafe(self.pos_queue.put(pose2movement(res.best_pose)), self._loop)
+            
+            if self._map_counter % 3 == 0:
+                mmap = self._make_map()
+                asyncio.run_coroutine_threadsafe(self.map_queue.put(mmap), self._loop)
+                
+                if self._map_counter % 30 == 0:
+                    print(f"[map] {time.time()}")
+                    cv2.imwrite("map.png", mmap[0])
 
             self._map_counter += 1
 
@@ -186,16 +174,14 @@ class SLAMClient(AsyncROSClient):
         if self.scan_queue.full():
             for _ in range(int(self.scan_queue.maxsize / 2)):
                 self.scan_queue.get_nowait()
+            self.scan_queue.get_nowait()
 
-        self.scan_queue.put((data, self.last_pose))
+        self.scan_queue.put(data)
 
         await self.anon("lidar", "ping", b"hi")
 
-    @aparsedata(datatypes.Vector)
-    async def on_motorcontroller_odometry(self, data: datatypes.Vector):
-        self.last_pose = data
 
-
+# TODO: make graceful shutdown
 async def main():
     client = SLAMClient()
     client._setup_mapper()
