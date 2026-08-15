@@ -205,6 +205,9 @@ async def main():
     async def post_pos_job():
         await client.wait()
 
+        # miniros allows you to send and receive data with any type you want
+        # here we sending pre-encoded Movement bytes but on the other end we
+        # will parse it as Movement using @aparsedata
         pos_topic = await client.topic("pose", datatypes.Bytes)
 
         while client.running.is_set():
@@ -217,32 +220,13 @@ async def main():
     async def post_map_job():
         await client.wait()
 
-        map_topic = await client.topic("map", SLAMOffsetMap)
+        map_topic = await client.topic("map", datatypes.Bytes)
 
         while client.running.is_set():
             if client.last_map is not None:
-                grid, width, height, ofs_x, ofs_y, resolution = client.last_map
+                await map_topic.post(client.last_map)
 
-                # "grid": NumpyArray,
-                # "width": Int,
-                # "height": Int,
-                # "offset_x": Int,
-                # "offset_y": Int,
-                # "resolution": Float,
-                _map = SLAMOffsetMap(
-                    grid=grid,
-                    width=width,
-                    height=height,
-                    offset_x=-int(ofs_x / resolution),  # offset is negative because
-                    offset_y=-int(
-                        ofs_y / resolution
-                    ),  # it is given in world coordinates
-                    resolution=resolution,
-                )
-
-            await map_topic.post(_map)
-
-        await asyncio.sleep(1 / 2)
+            await asyncio.sleep(1 / 2)
 
     async def run():
         await client.wait()
