@@ -19,7 +19,7 @@ class MotorControllerClient(AsyncROSClient):
         port = ""
         match platform.system():
             case "Windows":
-                port = "COM5"
+                port = "COM6"
 
             case _:
                 port = "/dev/arduino"
@@ -52,9 +52,15 @@ class MotorControllerClient(AsyncROSClient):
 
 async def main():
     client = MotorControllerClient()
+    
+    await client.serial.connect()
+    fetch = asyncio.create_task(client.serial.fetch_task())
+    
+    print("Connected")
 
-    async def shutdown(sig, frame):
-        await client.serial.close()
+    def shutdown(sig, frame):
+        client.serial.writer.close()
+        quit(0)
 
     async def run():
         await client.wait()
@@ -68,14 +74,14 @@ async def main():
             await odometry_topic.post(datatypes.Vector(x, y, t))
             await speeds_topic.post(datatypes.Vector(v, w, 0))
 
-    async def crash_prevent():
-        while True:
-            await asyncio.sleep(0.1)
+    # async def crash_prevent():
+    #     while True:
+    #         await asyncio.sleep(0.1)
 
-            # time limit from last speeds
-            # update to prevent crashes
-            if time.time() - client.last_update > 0.5:
-                await client.serial.set_speeds(0, 0)
+    #         # time limit from last speeds
+    #         # update to prevent crashes
+    #         if time.time() - client.last_update > 0.5:
+    #             client.serial.set_speeds(0, 0)
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
@@ -83,9 +89,9 @@ async def main():
     try:
         await asyncio.gather(
             client.run(),
-            crash_prevent(),
-            client.serial.fetch_task(),
+            # crash_prevent(),
             run(),
+            fetch,
         )
 
     except KeyboardInterrupt:
