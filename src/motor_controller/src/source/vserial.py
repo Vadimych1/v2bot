@@ -1,4 +1,4 @@
-from asyncio import Queue, Event, Lock
+from asyncio import Event, Lock
 import wireio
 import time
 
@@ -7,22 +7,12 @@ class ArduinoSerial:
     def __init__(self, port, baudrate=115200):
         """Initialize serial connection"""
         self.serial = wireio.AsyncSerial(port, baudrate, timeout=1)
-        self.odometry_speeds_queue = Queue(100)
+        self.last_odometry = None
         
         self.running = Event()
         self._lock = Lock()
 
         time.sleep(2)  # Wait for Arduino to connect
-
-    # def _sound_startup(self):
-    #     self.send_floats(0.4, 0.4)
-    #     time.sleep(0.05)
-    #     self.send_floats(0.0, 0.0)
-    #     time.sleep(0.05)
-    #     self.send_floats(0.4, 0.4)
-    #     time.sleep(0.05)
-    #     self.send_floats(0.0, 0.0)
-    #     time.sleep(0.05)
 
     async def set_speeds(self, left: float, right: float):
         data = f"S {left:.4f} {right:.4f}\n"
@@ -40,18 +30,13 @@ class ArduinoSerial:
 
     async def fetch_one(self):
         try:
-            async with self._lock:
-                data = await self.serial.read_until(b"\n")
+            data = await self.serial.read_until(b"\n", 32)
 
             l = data.decode().strip().split(" ")
             l = list(map(float, l))
 
-            if self.odometry_speeds_queue.full():
-                for _ in range(int(self.odometry_speeds_queue.maxsize / 2)):
-                    await self.odometry_speeds_queue.get()
-            
             if len(l) == 5:
-                await self.odometry_speeds_queue.put(l)
+                self.last_odometry = l
 
         except ValueError:
             pass
