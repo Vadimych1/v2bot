@@ -26,19 +26,33 @@ class MotorControllerClient(AsyncROSClient):
 
         self.serial = ArduinoSerial(port, 115200)
         self.last_update = time.time()
-        self.ik = CurrentIK(0.19, 0.022)
+        self.ik = CurrentIK(0.189, 0.0189)
         self.n = 0
+        
+        # optimizations
+        self.prev_v = 0
+        self.prev_w = 0
     
     @aparsedata(datatypes.Vector)
-    async def on_motioncontroller_cmdvel(self, data: datatypes.Vector):        
+    async def on_motioncontroller_cmdvel(self, data: datatypes.Vector):      
+        start = time.perf_counter()
+          
         self.last_update = time.time()
 
         v, w = data.x, data.y
+        if self.prev_v == v and self.prev_w == w:
+            return
+        
+        self.prev_v = v
+        self.prev_w = w
+        
         l, r = self.ik.calculate_wheel_speeds(v, w)
-
+        
         await self.serial.set_speeds(l, r)
         
+        print(time.perf_counter() - start)
         print(l, r)
+
 
     @aparsedata(datatypes.Movement)
     async def on_slam_pose(self, data: datatypes.Movement):
@@ -47,8 +61,6 @@ class MotorControllerClient(AsyncROSClient):
         if self.n % 3 == 0:
             x, y = data.pos.x, data.pos.y
             theta = data.ang.z
-            
-            print("SLAM:", x, y, theta)
 
             await self.serial.reset_position(x, y, theta)
             
@@ -70,10 +82,13 @@ async def main():
         speeds_topic = await client.topic("velocity", datatypes.Vector)
 
         while True:
-            x, y, t, v, w = await client.serial.odometry_speeds_queue.get()
+            if client.serial.last_odometry is not None:
+                x, y, t, v, w = client.serial.last_odometry
 
-            await odometry_topic.post(datatypes.Vector(x, y, t))
-            await speeds_topic.post(datatypes.Vector(v, w, 0))
+                await odometry_topic.post(datatypes.Vector(x, y, t))
+                await speeds_topic.post(datatypes.Vector(v, w, 0))
+
+            await asyncio.sleep(0.1)
 
     # # async def crash_prevent():
     # #     while True:

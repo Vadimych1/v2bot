@@ -53,10 +53,10 @@ class PathPlanner(AsyncROSClient):
         robot_r = int(self.robot_radius_m / self.resolution)
 
         kernel = cv.getStructuringElement(
-            cv.MORPH_RECT, (2 * robot_r - 1, 2 * robot_r - 1)
+            cv.MORPH_RECT, (2 * robot_r + 1, 2 * robot_r + 1)
         )
 
-        obstacle_mask = (self.grid == 0).astype(np.uint8) * 255
+        obstacle_mask = (self.grid < 40).astype(np.uint8) * 255
         dilated_mask = cv.dilate(obstacle_mask, kernel, iterations=1)
 
         self.dilated_grid = self.grid.copy()
@@ -84,10 +84,14 @@ class PathPlanner(AsyncROSClient):
         px, py = pixel_point
         px, py = int(px), int(py)
 
-        # if out-of-bounds, allow to move at most 
+        wx, wy = self._pixel_to_world(pixel_point)
+
+        # if out-of-bounds, allow to move to at most +-d_width or +-d_height
         if px < 0 or px >= self.d_width or py < 0 or py >= self.d_height:
-            wx, wy = self._pixel_to_world(pixel_point)
             return self.min_x < wx < self.max_x and self.min_y < wy < self.max_y
+
+        if self.start_pos is not None and self._distance((wx, wy), self.start_pos) <= self.robot_radius_m:
+            return True
 
         if self.dilated_grid is not None:
             return self.dilated_grid[py, px] >= 40
@@ -218,21 +222,22 @@ class PathPlanner(AsyncROSClient):
             print(f"1 {self.grid is None} {self.start_pos is None} {self.end_pos is None}")
             return None
 
-        # # preprocess grid using dilation
-        # if not self._dilate_grid():
-        #     return None
+        # preprocess grid using dilation
+        if not self._dilate_grid():
+            return None
 
-        self.dilated_grid = self.grid
         self.d_width = self.width
         self.d_height = self.height
 
         start_pixel = self._world_to_pixel(self.start_pos)
         end_pixel = self._world_to_pixel(self.end_pos)
 
-        start_free = self._is_free(start_pixel)
+        # start_free = self._is_free(start_pixel)
         end_free = self._is_free(end_pixel)
-        if not start_free or not end_free:
-            print(f"3 {start_free} {end_free}")
+        # if not start_free or not end_free:
+            # print(f"3 {start_free} {end_free}")
+            # return None
+        if not end_free:
             return None
 
         tree = [{"pos": start_pixel, "parent": -1, "cost": 0.0}]
@@ -398,21 +403,6 @@ async def main():
                 else:
                     await path_topic.post(np.asarray(path))
                     print(f"[] Built path in {build_end - build_start} seconds")
-
-                    try:
-                        im = cv.imread("map.png")
-                        for i in range(len(path) - 1):
-                            a, b = path[i], path[i + 1]
-                            
-                            a = client._world_to_pixel(a)
-                            b = client._world_to_pixel(b)
-                            
-                            im = cv.line(im, a, b, 0, 2)
-                            
-                        cv.imwrite("path.png", im)
-                        
-                    except:
-                        pass
 
                 prev_goal = client.end_pos
 

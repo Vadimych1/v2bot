@@ -26,7 +26,6 @@ def pose2movement(pose: Pose2) -> Movement:
     return Movement(Vector(pose.x, pose.y, 0), Vector(0, 0, pose.yaw))
 
 
-# TODO: transfer raw bytes from miniros and parse them here to LidarDatatype
 def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
     seq_scan_matcher_config = {
         "angle_variance_penalty": 0.349,
@@ -232,8 +231,6 @@ async def main():
     async def run():
         await client.wait()
         await client.anon("lidar", "ping", b"hi")
-
-    client.process_scans()
 
     try:
         await asyncio.gather(
