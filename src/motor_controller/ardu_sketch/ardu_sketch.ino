@@ -239,16 +239,15 @@ float leftIntegral = 0.0, rightIntegral = 0.0;
 float leftPrevError = 0.0, rightPrevError = 0.0;
 
 // time
-unsigned long lastUpdateTime = 0;
 unsigned long lastMicros = 0;
 
 // complementary filter dynamic value
 float alpha = 0.0;
 
-// sign function
-template<typename T> int sign(T val) {
-  return (T(0) < val) - (val < T(0));
-}
+float leftMeasures[5] = {0, 0, 0, 0, 0};
+uint8_t leftMeasuresIdx = 0;
+float rightMeasures[5] = {0, 0, 0, 0, 0};
+uint8_t rightMeasuresIdx = 0;
 
 void setup() {
   pinMode(L_IN1, OUTPUT);
@@ -270,6 +269,11 @@ void setup() {
     while (1) {
       Serial.println("mpu failed");
       delay(1000);
+
+      if (mpu.testConnection()) {
+        Serial.println("mpu restored");
+        break;
+      }
     }
   }
 
@@ -277,7 +281,6 @@ void setup() {
   calibrateGyro(2000);
 
   // reset time
-  lastUpdateTime = millis();
   lastMicros = micros();
 }
 
@@ -301,17 +304,16 @@ void loop() {
   // return;
 
   handleSerialInput();
+  unsigned long now = micros();
 
   // update every 10 ms
-  if (millis() - lastUpdateTime >= 10) {
+  if (now - lastMicros >= 10000) {
     ticks += 1;
 
-    unsigned long nowMicros = micros();
-    float dt = (nowMicros - lastMicros) / 1000000.0;  // seconds
+    float dt = (now - lastMicros) * 1e-6f;  // seconds
 
     if (dt <= 0.0 || dt > 0.25) {
-      lastUpdateTime = millis();
-      lastMicros = nowMicros;
+      lastMicros = now;
       return;
     }
 
@@ -350,8 +352,7 @@ void loop() {
     filter.predict(v, omega, dt);
 
     // reset time
-    lastUpdateTime = millis();
-    lastMicros = nowMicros;
+    lastMicros = now;
   }
 
   // send every 100 ms
@@ -370,10 +371,10 @@ void loop() {
   }
 }
 
-char cmd[25];
+char cmd[32];
 void handleSerialInput() {
   if (Serial.available() > 0) {
-    Serial.readBytesUntil('\n', cmd, 25);
+    Serial.readBytesUntil('\n', cmd, 32);
     char* token = strtok(cmd, " ");
     if (!token) return;
 
@@ -424,14 +425,12 @@ void setMotor(int in1, int in2, int en, int pwm) {
     digitalWrite(in2, LOW);
   }
 
-  if (pwm > 255) {
-    pwm = 255;
-  } else if (pwm < -255) {
-    pwm = -255;
-  }
-
   if (pwm < 0) {
     pwm *= -1;
+  }
+
+  if (pwm > 255) {
+    pwm = 255;
   }
 
   analogWrite(en, pwm);
@@ -443,13 +442,31 @@ void motorControl(float dt, float dLeft, float dRight) {
   float leftMeas = (dLeft / WHEEL_RADIUS) / dt;
   float rightMeas = (dRight / WHEEL_RADIUS) / dt;
 
+  leftMeasures[leftMeasuresIdx] = leftMeas;
+  rightMeasures[rightMeasuresIdx] = rightMeas;
+
+  leftMeas = rightMeas = 0;
+  for (int i = 0; i < 5; i++) {
+    leftMeas += leftMeasures[i];
+    rightMeas += rightMeasures[i];
+  }
+
+  leftMeas /= 5;
+  rightMeas /= 5;
+
+  leftMeasuresIdx += 1;
+  rightMeasuresIdx += 1;
+
+  leftMeasuresIdx %= 5;
+  rightMeasuresIdx %= 5;
+
   float leftErr = speedLeft - leftMeas;
   float rightErr = speedRight - rightMeas;
 
-  leftIntegral += leftErr * dt;
+  leftIntegral += leftErr * dt * 3;
   leftIntegral = constrain(leftIntegral, -PID_LIMIT / Ki, PID_LIMIT / Ki);
 
-  rightIntegral += rightErr * dt;
+  rightIntegral += rightErr * dt * 3;
   rightIntegral = constrain(rightIntegral, -PID_LIMIT / Ki, PID_LIMIT / Ki);
 
   float leftDeriv = (leftErr - leftPrevError) / dt;
@@ -457,6 +474,9 @@ void motorControl(float dt, float dLeft, float dRight) {
 
   int leftPwm = (int)(Kp * leftErr + Ki * leftIntegral + Kd * leftDeriv);
   int rightPwm = (int)(Kp * rightErr + Ki * rightIntegral + Kd * rightDeriv);
+
+  leftPwm = constrain(leftPwm, -PID_LIMIT, PID_LIMIT);
+  rightPwm = constrain(rightPwm, -PID_LIMIT, PID_LIMIT);
 
   leftPrevError = leftErr;
   rightPrevError = rightErr;

@@ -218,8 +218,6 @@ class PathPlanner(AsyncROSClient):
         """
 
         if self.grid is None or self.start_pos is None or self.end_pos is None:
-            # TODO: for debugging; remove when complete
-            print(f"1 {self.grid is None} {self.start_pos is None} {self.end_pos is None}")
             return None
 
         # preprocess grid using dilation
@@ -232,11 +230,7 @@ class PathPlanner(AsyncROSClient):
         start_pixel = self._world_to_pixel(self.start_pos)
         end_pixel = self._world_to_pixel(self.end_pos)
 
-        # start_free = self._is_free(start_pixel)
         end_free = self._is_free(end_pixel)
-        # if not start_free or not end_free:
-            # print(f"3 {start_free} {end_free}")
-            # return None
         if not end_free:
             return None
 

@@ -24,7 +24,7 @@ class MotionControllerConfig:
         weight_heading: float = 0.6,
         weight_dist: float = 0.8,
         weight_speed: float = 0.2,
-        weight_obstacle: float = 0.02,
+        weight_obstacle: float = 0.1,
         goal_tolerance: float = 0.2,
         lookahead_distance: float = 0.6,
     ):
@@ -247,7 +247,7 @@ class MotionController(AsyncROSClient):
             
             obstacle_cost += local_cost * temporal_weight
             
-        obstacle_cost += self.config.weight_obstacle
+        obstacle_cost *= self.config.weight_obstacle
 
         total_cost = heading_cost + dist_cost + speed_cost + obstacle_cost
 
@@ -366,9 +366,7 @@ class MotionController(AsyncROSClient):
     #     self.robot_heading = pose.ang.z
     
     @aparsedata(Vector)
-    async def on_motorcontroller_odometry(self, odom: Vector):
-        print("got odometry")
-        
+    async def on_motorcontroller_odometry(self, odom: Vector):        
         self.robot_x, self.robot_y, self.robot_heading = odom.x, odom.y, odom.z
 
     @aparsedata(NumpyArray)
@@ -394,20 +392,8 @@ async def main():
         while True:
             await asyncio.sleep(0.1)
             
-            start = time.perf_counter()
-            
             v, w = await asyncio.to_thread(client.compute_control)
-
-            # if prev_v != v or prev_w != w:
-            
-            print(v, w)
-            
             await cmdvel_topic.post(Vector(v, -w, 0))
-
-            print(time.perf_counter() - start)
-            
-            # prev_v = v
-            # prev_w = w
                 
     path_track = asyncio.create_task(run_path_tracker())
 

@@ -35,8 +35,6 @@ class MotorControllerClient(AsyncROSClient):
     
     @aparsedata(datatypes.Vector)
     async def on_motioncontroller_cmdvel(self, data: datatypes.Vector):      
-        start = time.perf_counter()
-          
         self.last_update = time.time()
 
         v, w = data.x, data.y
@@ -49,9 +47,6 @@ class MotorControllerClient(AsyncROSClient):
         l, r = self.ik.calculate_wheel_speeds(v, w)
         
         await self.serial.set_speeds(l, r)
-        
-        print(time.perf_counter() - start)
-        print(l, r)
 
 
     @aparsedata(datatypes.Movement)

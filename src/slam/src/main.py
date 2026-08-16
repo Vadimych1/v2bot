@@ -1,9 +1,8 @@
 # import cv2
 import asyncio
 import multiprocessing as mp
-from queue import Queue, Empty
+from queue import Empty
 from miniros import AsyncROSClient, datatypes
-from miniros.util.decorators import aparsedata
 from miniros_slam.source.datatypes import SLAMOffsetMap
 from miniros.util.datatypes import Movement, Vector
 from yag_slam.graph_slam import GraphSlam
@@ -121,10 +120,6 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
             )
 
             mmap_data = SLAMOffsetMap.encode(mmap_data)
-
-            # if self._map_counter % 30 == 0:
-            #     print(f"[map] {time.time()}")
-            #     cv2.imwrite("map.png", mmap[0])
 
         map_counter += 1
         output_queue.put((Movement.encode(movement_msg), mmap_data))
