@@ -1,7 +1,8 @@
-from miniros import AsyncROSClient, datatypes
-import asyncio
-import rplidar
+from miniros import AsyncROSClient, datatypes, LatestQueue, threaded, aparsedata
+import pyrplidarsdk
 import platform
+import asyncio
+import signal
 import time
 
 
@@ -9,21 +10,60 @@ class LidarClient(AsyncROSClient):
     def __init__(self, ip="localhost", port=3000):
         super().__init__("lidar", ip, port)
 
-        self.lidar = rplidar.RPLidar(
-            port="COM4" if platform.system() == "Windows" else "/dev/ttyLidar",
+        # TODO: configurable ports
+        self.lidar = pyrplidarsdk.RplidarDriver(
+            port="COM3" if platform.system() == "Windows" else "/dev/ttyUSB1",
             baudrate=115200,
         )
 
-        self.lidar.stop_motor()
+        if not self.lidar.connect():
+            print("[] failed to connect")
+            exit(1)
 
         self.last_ping_time = time.time()
+        self.lidar_queue = LatestQueue()
+        self.running = asyncio.Event()
+
+        self._loop = asyncio.get_event_loop()
+
+        self.current_position = datatypes.Vector(0, 0, 0)
 
     async def on_ping(self, _, node):
         self.last_ping_time = time.time()
 
+    def iter_scans(self):
+        self.running.set()
+
+        while self.running.is_set():
+            dat = self.lidar.get_scan_data()
+
+            if dat is not None:
+                yield dat
+
+            else:
+                print("[] null")
+
+    @threaded()
+    def scans_job(self):
+        self.lidar.start_scan()
+
+        for angles, distances, quality in self.iter_scans():
+            asyncio.run_coroutine_threadsafe(self.lidar_queue.put((angles, distances, self.current_position.copy())), self._loop)
+
+    @aparsedata(datatypes.Vector)
+    async def on_motorcontroller_odometry(self, pos: datatypes.Vector):
+        self.current_position = pos
 
 async def main():
     client = LidarClient()
+    t = client.scans_job()
+
+    def shutdown(sig, frame):
+        client.running.clear()
+        client.lidar.stop_scan()
+        client.lidar.disconnect()
+
+        t.join()
 
     async def run():
         await client.wait()
@@ -31,50 +71,27 @@ async def main():
         ldr_topic = await client.topic("lidar", datatypes.LidarDatatype)
 
         while True:
-            if time.time() - client.last_ping_time > 7.0:
-                client.lidar.stop_motor()
-                asyncio.sleep(1.0)
+            angles, distances, pos = await client.lidar_queue.get()
 
-            else:
-                try:
-                    client.lidar.clean_input()
-                    client.lidar.start_motor()
+            await ldr_topic.post(
+                datatypes.LidarDatatype(
+                    distances=distances,
+                    angles=angles,
+                    pos=pos
+                )
+            )
 
-                    for scan in client.lidar.iter_scans(min_len=360, max_buf_meas=540):
-                        _, angles, distances = zip(*scan)
+    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
 
-                        await ldr_topic.post(
-                            datatypes.LidarDatatype(
-                                list(distances),
-                                list(angles),
-                            )
-                        )
+    try:
+        await asyncio.gather(
+            client.run(),
+            run(),
+        )
 
-                        if time.time() - client.last_ping_time > 7.0:
-                            break
-
-                except rplidar.RPLidarException as e:
-                    print(e)
-                    print(
-                        "[] Lidar exception (see full exception above). Reconnecting..."
-                    )
-
-                    client.lidar.stop()
-                    client.lidar.disconnect()
-
-                    await asyncio.sleep(0.4)
-
-                    client.lidar.connect()
-
-                except Exception as e:
-                    print(f"[] Unexpected error occurred: {e}")
-
-                    await asyncio.sleep(0.2)
-
-    await asyncio.gather(
-        client.run(),
-        run(),
-    )
+    except (KeyboardInterrupt, asyncio.QueueShutDown):
+        pass
 
 
 if __name__ == "__main__":

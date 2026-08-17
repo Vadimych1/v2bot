@@ -1,1 +1,0 @@
-# Package goal_manager

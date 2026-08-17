@@ -1,0 +1,46 @@
+[build-system]
+requires = ["scikit-build-core >=0.4.3", "nanobind >=1.3.2"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "pyrplidarsdk"
+version = "0.1.2"
+description = "Python wrapper for RPLIDAR SDK using nanobind"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Dexmate Inc.", email = "contact@dexmate.ai" }]
+license = { text = "MIT" }
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: C++",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+dev = ["build", "twine"]
+
+[project.urls]
+Homepage = "https://github.com/dexmate-ai/pyrplidarsdk"
+Repository = "https://github.com/dexmate-ai/pyrplidarsdk.git"
+Issues = "https://github.com/dexmate-ai/pyrplidarsdk/issues"
+
+[tool.scikit-build]
+wheel.expand-macos-universal-tags = true
+sdist.include = ["rplidar_sdk/**/*", "src/**/*"]
+
+[tool.cibuildwheel]
+build-verbosity = 1
+skip = ["*-musllinux*", "*-win32", "*-win_amd64", "*-macosx*"]
+build = ["cp*-manylinux_x86_64", "cp*-manylinux_aarch64"]
+archs = ["x86_64", "aarch64"]

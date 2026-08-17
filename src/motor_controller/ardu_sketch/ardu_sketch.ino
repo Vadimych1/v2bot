@@ -1,201 +1,486 @@
-#include "MPU6050.h"
-#include <math.h>
+#include <Wire.h>
+#include <MPU6050.h>
+#include <Encoder.h>
 
-#define BUFFER_SIZE 100
+// encoders pins
+#define LEFT_ENC_A 2
+#define LEFT_ENC_B 4
+#define RIGHT_ENC_A 3
+#define RIGHT_ENC_B 5
 
-// Pins
-#define PWM_A 10
-#define PWM_B 11
+// left motor
+#define L_IN1 7
+#define L_IN2 8
+#define L_EN 9
 
-#define AA 8
-#define AB 9
-#define BA 12
-#define BB 13
+// right motor
+#define R_IN1 12
+#define R_IN2 13
+#define R_EN 10
 
-// Packet vars
-#define PACKET_PING 'P'
-#define PACKET_DATA 'D'
+// extended kalman filter for realtime pose estimation and correction
+class EKF {
+public:
+  float x, y, theta;  // state
 
-// Speeds
-#define MAX_SPEED 10.0
+  float P[9];  // covariance matrix (3x3)
+  float Q[9];  // process (odometry) noise matrix
+  float R[9];  // measurement (SLAM) noise matrix
 
-union SpeedsData {
-  byte bytes[8];
-  struct {
-    float left;
-    float right;
-  } floats;
-} speedsData;
+  // ekf buffers
+  float F[9], FP[9], FPFt[9];  // F, F * P, (F * P) * F^T
+  float S[9], S_inv[9], K[9], I_m_K[9], newP[9];
+  float Z[3], KZ[3];
 
-MPU6050 mpu;
-
-int16_t ax, ay, az;  // raw acc
-int16_t gx, gy, gz;  // raw gyro
-
-float theta = 0;
-float vel = 0;
-float xy = 0;
-const float dt = 0.01;
-
-void setup() {
-  pinMode(AA, OUTPUT);
-  pinMode(AB, OUTPUT);
-  pinMode(BA, OUTPUT);
-  pinMode(BB, OUTPUT);
-
-  digitalWrite(AA, LOW);
-  digitalWrite(AB, LOW);
-  digitalWrite(BA, LOW);
-  digitalWrite(BB, LOW);
-
-  pinMode(PWM_A, OUTPUT);
-  pinMode(PWM_B, OUTPUT);
-
-  analogWrite(PWM_A, 0);
-  analogWrite(PWM_B, 0);
-
-  Wire.begin();
-  Serial.begin(115200);
-
-  mpu.initialize();
-  Serial.println(mpu.testConnection() ? "MPU6050 OK" : "MPU6050 FAIL");
-  delay(80);
-  calibration();
-}
-
-uint8_t ctr = 0;
-void loop() {
-  // Process incoming data
-  if (Serial.available() > 0) {
-    char pktType = Serial.read();
-
-    switch (pktType) {
-      case PACKET_PING:
-        _handlePing();
-        break;
-
-      case PACKET_DATA:
-        _handleData();
-        break;
-
-      default:
-        while (Serial.available() > 0) {
-          Serial.read();
-        }
-        break;
-    }
-  }
-
-  mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
-
-  float accX_f = ((float)ax) / 32768 * 2;
-  float accY_f = ((float)ay) / 32768 * 2;
-  // float accZ_f = ((float)az) / 32768 * 2;
-
-  // float gyrX_f = ((float)gx) / 32768 * 250 / 180 * PI;
-  // float gyrY_f = ((float)gy) / 32768 * 250 / 180 * PI;
-  float gyrZ_f = ((float)gz) / 32768 * 250 / 180 * PI;
-
-  if (speedsData.floats.left == 0.0 && speedsData.floats.right == 0.0) {
-    vel = 0;
-  }
-
-  theta += gyrZ_f * dt;
-  vel += accX_f * dt;  // simplified model: count only X axis movement
-  xy += vel * dt;
-
-  if (ctr >= 20) {
-    Serial.print(theta, 6);
-    Serial.print(",");
-    Serial.print(xy, 6);
-    Serial.print(",");
-    Serial.println(0.2, 6);
-
-    ctr = 0;
+  EKF() {
+    x = 0;
+    y = 0;
     theta = 0;
-    xy = 0;
+
+    float P_init[9] = { 0.1, 0, 0, 0, 0.1, 0, 0, 0, 0.1 };
+    memcpy(P, P_init, sizeof(P));
+
+    float Q_init[9] = { 0.012, 0, 0, 0, 0.012, 0, 0, 0, 0.004 };
+    memcpy(Q, Q_init, sizeof(Q));
+
+    float R_init[9] = { 0.04, 0, 0, 0, 0.04, 0, 0, 0, 0.015 };
+    memcpy(R, R_init, sizeof(R));
   }
 
-  ctr += 1;
+  /// predicts position using odometry data
+  void predict(float v, float omega, float dt) {
+    theta += omega * dt;
 
-  delay(10);
-}
+    // normalize angle
+    while (theta > PI)
+      theta -= 2 * PI;
+    while (theta < -PI)
+      theta += 2 * PI;
 
-void calibration() {
-  long offsets[6];
-  long offsetsOld[6];
-  int16_t mpuGet[6];
-  mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
-  mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_250);
-  mpu.setXAccelOffset(0);
-  mpu.setYAccelOffset(0);
-  mpu.setZAccelOffset(0);
-  mpu.setXGyroOffset(0);
-  mpu.setYGyroOffset(0);
-  mpu.setZGyroOffset(0);
-  delay(10);
-  Serial.println("Calibration start. It will take about 5 seconds");
-  for (byte n = 0; n < 10; n++) {
-    for (byte j = 0; j < 6; j++) {
-      offsets[j] = 0;
-    }
-    for (byte i = 0; i < 100 + BUFFER_SIZE; i++) {
-      mpu.getMotion6(&mpuGet[0], &mpuGet[1], &mpuGet[2], &mpuGet[3], &mpuGet[4], &mpuGet[5]);
-      if (i >= 99) {
-        for (byte j = 0; j < 6; j++) {
-          offsets[j] += (long)mpuGet[j];
+    float st = sinf(theta);
+    float ct = cosf(theta);
+
+    x += v * dt * ct;
+    y += v * dt * st;
+
+    // jacobian matrix
+    F[0] = 1.0;
+    F[1] = 0.0;
+    F[2] = -v * dt * st;
+    F[3] = 0.0;
+    F[4] = 1.0;
+    F[5] = v * dt * ct;
+    F[6] = 0.0;
+    F[7] = 0.0;
+    F[8] = 1.0;
+
+    // mat mul
+    for (int i = 0; i < 3; i++) {
+      for (int j = 0; j < 3; j++) {
+        FP[i * 3 + j] = 0;
+
+        for (int k = 0; k < 3; k++) {
+          FP[i * 3 + j] += F[i * 3 + k] * P[k * 3 + j];
         }
       }
     }
-    for (byte i = 0; i < 6; i++) {
-      offsets[i] = offsetsOld[i] - ((long)offsets[i] / BUFFER_SIZE);
-      offsetsOld[i] = offsets[i];
+
+    for (int i = 0; i < 3; i++) {
+      for (int j = 0; j < 3; j++) {
+        FPFt[i * 3 + j] = 0;
+        for (int k = 0; k < 3; k++) {
+          FPFt[i * 3 + j] += FP[i * 3 + k] * F[j * 3 + k];
+        }
+      }
     }
 
-    mpu.setXAccelOffset(offsets[0] / 8);
-    mpu.setYAccelOffset(offsets[1] / 8);
-    mpu.setZAccelOffset(offsets[2] / 8);
-    mpu.setXGyroOffset(offsets[3] / 4);
-    mpu.setYGyroOffset(offsets[4] / 4);
-    mpu.setZGyroOffset(offsets[5] / 4);
-    delay(2);
+    for (int i = 0; i < 9; i++) {
+      P[i] = FPFt[i] + Q[i];
+    }
+  }
+
+  /// updates position using SLAM data
+  void update(float sx, float sy, float stheta) {
+    float yaw_err = stheta - theta;
+
+    // normalize angle
+    while (yaw_err > PI)
+      yaw_err -= 2 * PI;
+    while (yaw_err < -PI)
+      yaw_err += 2 * PI;
+
+    // error matrix
+    Z[0] = sx - x;
+    Z[1] = sy - y;
+    Z[2] = yaw_err;
+
+    for (int i = 0; i < 9; i++) {
+      S[i] = P[i] + R[i];
+    }
+
+    // invert S
+    if (!invert3x3(S, S_inv)) {
+      return;
+    }
+
+    // kalman coef
+    for (int i = 0; i < 3; i++) {
+      for (int j = 0; j < 3; j++) {
+        K[i * 3 + j] = 0;
+
+        for (int k = 0; k < 3; k++) {
+          K[i * 3 + j] += P[i * 3 + k] * S_inv[k * 3 + j];
+        }
+      }
+    }
+
+    KZ[0] = KZ[1] = KZ[2] = 0.0f;
+    for (int i = 0; i < 3; i++) {
+      for (int j = 0; j < 3; j++) {
+        KZ[i] += K[i * 3 + j] * Z[j];
+      }
+    }
+
+    x += KZ[0];
+    y += KZ[1];
+    theta += KZ[2];
+
+    // normalize angle
+    while (theta > PI)
+      theta -= 2 * PI;
+    while (theta < -PI)
+      theta += 2 * PI;
+
+    // update covariance P = (I - K) * P;
+    I_m_K[0] = 1 - K[0];
+    I_m_K[1] = -K[1];
+    I_m_K[2] = -K[2];
+    I_m_K[3] = -K[3];
+    I_m_K[4] = 1 - K[4];
+    I_m_K[5] = -K[5];
+    I_m_K[6] = -K[6];
+    I_m_K[7] = -K[7];
+    I_m_K[8] = 1 - K[8];
+
+    for (int i = 0; i < 3; i++) {
+      for (int j = 0; j < 3; j++) {
+        newP[i * 3 + j] = 0;
+        for (int k = 0; k < 3; k++) {
+          newP[i * 3 + j] += I_m_K[i * 3 + k] * P[k * 3 + j];
+        }
+      }
+    }
+
+    memcpy(P, newP, sizeof(P));
+  }
+
+private:
+  bool invert3x3(const float m[9], float inv[9]) {
+    float det = m[0] * (m[4] * m[8] - m[7] * m[5]) - m[1] * (m[3] * m[8] - m[6] * m[5]) + m[2] * (m[3] * m[7] - m[6] * m[4]);
+
+    if (fabs(det) < 1e-8) return false;
+
+    float invDet = 1.0 / det;
+    inv[0] = (m[4] * m[8] - m[7] * m[5]) * invDet;
+    inv[1] = (m[2] * m[7] - m[1] * m[8]) * invDet;
+    inv[2] = (m[1] * m[5] - m[2] * m[4]) * invDet;
+    inv[3] = (m[5] * m[6] - m[3] * m[8]) * invDet;
+    inv[4] = (m[0] * m[8] - m[2] * m[6]) * invDet;
+    inv[5] = (m[2] * m[3] - m[0] * m[5]) * invDet;
+    inv[6] = (m[3] * m[7] - m[4] * m[6]) * invDet;
+    inv[7] = (m[1] * m[6] - m[0] * m[7]) * invDet;
+    inv[8] = (m[0] * m[4] - m[1] * m[3]) * invDet;
+
+    return true;
+  }
+};
+
+// hardware constants
+const float WHEEL_RADIUS = 0.0189;
+const float WHEEL_BASE = 0.198;
+
+// this value depends on motor
+// how to measure this:
+// 1. uncomment code in the loop()
+// 2. select any dot on the wheel so you can track its rotation easily
+// 3. rotate wheel by 360 degrees exactly 10 times
+// 4. get last serial output, divide it by 10 and round to the next integer
+// you may turn wheel more times to get better results, but usually 10 is enough
+const int TICKS_PER_REV = 682;
+const float DIST_PER_TICK = (2 * PI * WHEEL_RADIUS) / TICKS_PER_REV;
+
+// encoders
+Encoder leftEnc(LEFT_ENC_A, LEFT_ENC_B);
+Encoder rightEnc(RIGHT_ENC_A, RIGHT_ENC_B);
+
+long lastLeftTicks = 0;
+long lastRightTicks = 0;
+
+// gyro configuration
+MPU6050 mpu;
+int16_t gyroZ_offset = 0;
+const float GYRO_SCALE = PI / (180.0 * 16.4);
+
+// orientation variables
+EKF filter;
+float v = 0.0, omega = 0.0;
+
+// wheels target speeds
+float speedLeft = 0.0, speedRight = 0.0;
+
+// PID constants
+const float Kp = 0.8;
+const float Ki = 15.0;
+const float Kd = 0;
+const float PID_LIMIT = 255.0;
+
+// PID variables
+float leftIntegral = 0.0, rightIntegral = 0.0;
+float leftPrevError = 0.0, rightPrevError = 0.0;
+
+// time
+unsigned long lastMicros = 0;
+
+// complementary filter dynamic value
+float alpha = 0.0;
+
+float leftMeasures[5] = {0, 0, 0, 0, 0};
+uint8_t leftMeasuresIdx = 0;
+float rightMeasures[5] = {0, 0, 0, 0, 0};
+uint8_t rightMeasuresIdx = 0;
+
+void setup() {
+  pinMode(L_IN1, OUTPUT);
+  pinMode(L_IN2, OUTPUT);
+  pinMode(L_EN, OUTPUT);
+
+  pinMode(R_IN1, OUTPUT);
+  pinMode(R_IN2, OUTPUT);
+  pinMode(R_EN, OUTPUT);
+
+  Serial.begin(115200);
+  Wire.begin();
+
+  mpu.initialize();
+
+  // if mpu is not available
+  // run infinite loop
+  if (!mpu.testConnection()) {
+    while (1) {
+      Serial.println("mpu failed");
+      delay(1000);
+
+      if (mpu.testConnection()) {
+        Serial.println("mpu restored");
+        break;
+      }
+    }
+  }
+
+  mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_2000);
+  calibrateGyro(2000);
+
+  // reset time
+  lastMicros = micros();
+}
+
+void calibrateGyro(int samples) {
+  long sum = 0;
+  for (int i = 0; i < samples; i++) {
+    sum += mpu.getRotationZ();
+    delay(1);
+  }
+
+  gyroZ_offset = sum / samples;
+}
+
+uint8_t ticks = 0;
+void loop() {
+  // if (millis() - lastUpdateTime >= 500) {
+  //   lastUpdateTime = millis();
+
+  //   Serial.println(leftEnc.read());
+  // }
+  // return;
+
+  handleSerialInput();
+  unsigned long now = micros();
+
+  // update every 10 ms
+  if (now - lastMicros >= 10000) {
+    ticks += 1;
+
+    float dt = (now - lastMicros) * 1e-6f;  // seconds
+
+    if (dt <= 0.0 || dt > 0.25) {
+      lastMicros = now;
+      return;
+    }
+
+    long leftTicks = leftEnc.read();
+    long rightTicks = -rightEnc.read();
+
+    long deltaLeft = leftTicks - lastLeftTicks;
+    long deltaRight = rightTicks - lastRightTicks;
+
+    lastLeftTicks = leftTicks;
+    lastRightTicks = rightTicks;
+
+    float dLeft = deltaLeft * DIST_PER_TICK;
+    float dRight = deltaRight * DIST_PER_TICK;
+
+    float dCenter = (dLeft + dRight) / 2.0;
+    float dThetaEnc = (dRight - dLeft) / WHEEL_BASE;
+
+    int16_t gyroRaw = mpu.getRotationZ() - gyroZ_offset;
+    float omega_gyro = gyroRaw * GYRO_SCALE;
+    float omega_enc = dThetaEnc / dt;
+
+    // recalculate alpha value
+    if (abs(deltaLeft) > 0 || abs(deltaRight) > 0) {
+      alpha = 0.98;
+    } else {
+      alpha = 0;
+    }
+
+    // use complementary filter and integrate
+    omega = omega_gyro * alpha + omega_enc * (1 - alpha);
+    v = dCenter / dt;
+
+    // update motor signals
+    motorControl(dt, dLeft, dRight);
+    filter.predict(v, omega, dt);
+
+    // reset time
+    lastMicros = now;
+  }
+
+  // send every 100 ms
+  if (ticks >= 10) {
+    ticks = 0;
+
+    Serial.print(filter.x, 4);
+    Serial.print(" ");
+    Serial.print(filter.y, 4);
+    Serial.print(" ");
+    Serial.print(filter.theta, 4);
+    Serial.print(" ");
+    Serial.print(v, 4);
+    Serial.print(" ");
+    Serial.println(omega, 4);
   }
 }
 
-void _handlePing() {
-  Serial.println("PONG");
+char cmd[32];
+void handleSerialInput() {
+  if (Serial.available() > 0) {
+    Serial.readBytesUntil('\n', cmd, 32);
+    char* token = strtok(cmd, " ");
+    if (!token) return;
 
-  // blink led
-  digitalWrite(LED_BUILTIN, HIGH);
-  delay(50);
-  digitalWrite(LED_BUILTIN, LOW);
+    if (token[0] == 'R') {
+      token = strtok(NULL, " ");
+      if (!token) return;
+      float newX = atof(token);
+
+      token = strtok(NULL, " ");
+      if (!token) return;
+      float newY = atof(token);
+
+      token = strtok(NULL, " ");
+      if (!token) return;
+      float newH = atof(token);
+
+      // old: hard reset variables
+      // x = newX;
+      // y = newY;
+      // heading = newH;
+
+      // new: use EKF to estimate position
+      filter.update(newX, newY, newH);
+    } else if (token[0] == 'S') {
+      token = strtok(NULL, " ");
+      if (!token) return;
+      float newLeft = atof(token);
+
+      token = strtok(NULL, " ");
+      if (!token) return;
+      float newRight = atof(token);
+
+      speedLeft = newLeft;
+      speedRight = newRight;
+    }
+  }
 }
 
-void _handleData() {
-  while (Serial.available() < 8) {
-    delayMicroseconds(100);
+void setMotor(int in1, int in2, int en, int pwm) {
+  if (pwm > 0) {
+    digitalWrite(in1, HIGH);
+    digitalWrite(in2, LOW);
+  } else if (pwm < 0) {
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, HIGH);
+  } else {
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, LOW);
   }
 
-  for (int i = 0; i < 8; i++) {
-    speedsData.bytes[i] = Serial.read();
+  if (pwm < 0) {
+    pwm *= -1;
   }
 
-  float left = speedsData.floats.left;
-  float right = speedsData.floats.right;
+  if (pwm > 255) {
+    pwm = 255;
+  }
 
-  int val_AA = left > 0 ? HIGH : LOW;
-  int val_AB = left < 0 ? HIGH : LOW;
-  int val_BA = right < 0 ? HIGH : LOW;
-  int val_BB = right > 0 ? HIGH : LOW;
+  analogWrite(en, pwm);
+}
 
-  int val_A = (int)(min(abs(left), MAX_SPEED) / MAX_SPEED * 255);
-  int val_B = (int)(min(abs(right), MAX_SPEED) / MAX_SPEED * 255);
+void motorControl(float dt, float dLeft, float dRight) {
+  if (dt < 0.0001f) dt = 0.0001f;
 
-  analogWrite(PWM_A, val_A);
-  analogWrite(PWM_B, val_B);
+  float leftMeas = (dLeft / WHEEL_RADIUS) / dt;
+  float rightMeas = (dRight / WHEEL_RADIUS) / dt;
 
-  digitalWrite(AA, val_AA);
-  digitalWrite(BA, val_BA);
-  digitalWrite(AB, val_AB);
-  digitalWrite(BB, val_BB);
+  leftMeasures[leftMeasuresIdx] = leftMeas;
+  rightMeasures[rightMeasuresIdx] = rightMeas;
+
+  leftMeas = rightMeas = 0;
+  for (int i = 0; i < 5; i++) {
+    leftMeas += leftMeasures[i];
+    rightMeas += rightMeasures[i];
+  }
+
+  leftMeas /= 5;
+  rightMeas /= 5;
+
+  leftMeasuresIdx += 1;
+  rightMeasuresIdx += 1;
+
+  leftMeasuresIdx %= 5;
+  rightMeasuresIdx %= 5;
+
+  float leftErr = speedLeft - leftMeas;
+  float rightErr = speedRight - rightMeas;
+
+  leftIntegral += leftErr * dt * 3;
+  leftIntegral = constrain(leftIntegral, -PID_LIMIT / Ki, PID_LIMIT / Ki);
+
+  rightIntegral += rightErr * dt * 3;
+  rightIntegral = constrain(rightIntegral, -PID_LIMIT / Ki, PID_LIMIT / Ki);
+
+  float leftDeriv = (leftErr - leftPrevError) / dt;
+  float rightDeriv = (rightErr - rightPrevError) / dt;
+
+  int leftPwm = (int)(Kp * leftErr + Ki * leftIntegral + Kd * leftDeriv);
+  int rightPwm = (int)(Kp * rightErr + Ki * rightIntegral + Kd * rightDeriv);
+
+  leftPwm = constrain(leftPwm, -PID_LIMIT, PID_LIMIT);
+  rightPwm = constrain(rightPwm, -PID_LIMIT, PID_LIMIT);
+
+  leftPrevError = leftErr;
+  rightPrevError = rightErr;
+
+  setMotor(L_IN1, L_IN2, L_EN, leftPwm);
+  setMotor(R_IN1, R_IN2, R_EN, rightPwm * -1);
 }

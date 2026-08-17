@@ -2,6 +2,7 @@ from miniros_motor_controller.source.vserial import ArduinoSerial
 from miniros_algorithms.source.inverse_kinematics import CurrentIK
 from miniros.util.decorators import aparsedata
 from miniros import AsyncROSClient, datatypes
+import signal
 import platform
 import asyncio
 import time
@@ -12,64 +13,101 @@ class MotorControllerClient(AsyncROSClient):
         super().__init__("motorcontroller", ip, port, _parse_handlers)
 
         # get port based on system
-        # for testing compability
+        # for testing compatibility
         # TODO: maybe add port definition
         # for MacOS
         port = ""
         match platform.system():
             case "Windows":
-                port = "COM5"
+                port = "COM6"
 
             case _:
-                port = "/dev/ttyArduino"  # TODO: change to the actual arduino port name
+                port = "/dev/ttyUSB0"
 
         self.serial = ArduinoSerial(port, 115200)
         self.last_update = time.time()
-        self.ik = CurrentIK(0.15, 0.02)
+        self.ik = CurrentIK(0.189, 0.0189)
+        self.n = 0
         
-        self.serial_sync_lock = asyncio.Lock()
-
+        # optimizations
+        self.prev_v = 0
+        self.prev_w = 0
+    
     @aparsedata(datatypes.Vector)
-    async def on_motioncontroller_cmdvel(self, data: datatypes.Vector):
+    async def on_motioncontroller_cmdvel(self, data: datatypes.Vector):      
         self.last_update = time.time()
 
-        # calculate speeds based on values
         v, w = data.x, data.y
+        if self.prev_v == v and self.prev_w == w:
+            return
+        
+        self.prev_v = v
+        self.prev_w = w
+        
         l, r = self.ik.calculate_wheel_speeds(v, w)
         
-        await self.serial_sync_lock.acquire()
-        self.serial.send_speeds(l, r)
-        self.serial_sync_lock.release()
+        await self.serial.set_speeds(l, r)
 
+
+    @aparsedata(datatypes.Movement)
+    async def on_slam_pose(self, data: datatypes.Movement):
+        self.n += 1
+
+        if self.n % 3 == 0:
+            x, y = data.pos.x, data.pos.y
+            theta = data.ang.z
+
+            await self.serial.reset_position(x, y, theta)
+            
+    async def open_port(self):
+        await self.serial.serial.open()
+        
 
 async def main():
     client = MotorControllerClient()
-    client.serial.run_deltas_fetch()
+    await client.open_port()
+
+    def shutdown(sig, frame):
+        asyncio.create_task(client.serial.close()).add_done_callback(lambda _: quit(0))
 
     async def run():
         await client.wait()
 
         odometry_topic = await client.topic("odometry", datatypes.Vector)
+        speeds_topic = await client.topic("velocity", datatypes.Vector)
 
         while True:
-            await asyncio.sleep(0.19)
+            if client.serial.last_odometry is not None:
+                x, y, t, v, w = client.serial.last_odometry
 
-            # time limit from last speeds
-            # update to prevent crashes
-            if time.time() - client.last_update > 1.0:
-                await client.serial_sync_lock.acquire()
-                client.serial.send_floats(0, 0)
-                client.serial_sync_lock.release()
+                await odometry_topic.post(datatypes.Vector(x, y, t))
+                await speeds_topic.post(datatypes.Vector(v, w, 0))
 
-            while len(client.serial.odometry_queue) > 0:
-                dat = client.serial.odometry_queue.popleft()
-                await odometry_topic.post(datatypes.Vector(dat[0], dat[1], dat[2]))
-                await asyncio.sleep(0.03) # a small delay
+            await asyncio.sleep(0.1)
 
-    await asyncio.gather(
-        client.run(),
-        run(),
-    )
+    # # async def crash_prevent():
+    # #     while True:
+    # #         await asyncio.sleep(0.1)
+
+    # #         # time limit from last speeds
+    # #         # update to prevent crashes
+    # #         if time.time() - client.last_update > 0.5:
+    # #             client.serial.set_speeds(0, 0)
+
+    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
+
+    try:
+        await asyncio.gather(
+            client.run(),
+            # crash_prevent(),
+            client.serial.fetch_task(),
+            run(),
+        )
+
+    except KeyboardInterrupt:
+        pass
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

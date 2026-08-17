@@ -1,4 +1,4 @@
-<?xml version="1.0" ?>
+<?xml version="1.0"?>
 <package>
 	<name>lidar</name>
 	<entrypoint>main.py</entrypoint>
@@ -10,7 +10,12 @@
 	<authors>
 		<author>Vadimych1</author>
 	</authors>
-	<otherexts>
-		<!-- <ext>sudo pip3 install pyrplidar</ext> -->
-	</otherexts>
+
+	<linux-scripts>
+		<lscript>cd lidar &amp;&amp; bash "scripts/pyrplidarsdk-install.sh" PYEXEC &amp;&amp; cd ..</lscript>
+	</linux-scripts>
+
+	<windows-scripts>
+		<wscript>"cd lidar &amp;&amp; scripts\\pyrplidarsdk-install.bat PYEXEC &amp;&amp; cd .."</wscript>
+	</windows-scripts>
 </package>

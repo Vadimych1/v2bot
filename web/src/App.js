@@ -1,10 +1,12 @@
 import './App.css';
-import { Button } from './widgets/Button';
+import { Button, DictDisplay } from './widgets/Interactive';
 
 function App() {
   return (
     <div className="App">
-      <Button></Button>
+      <Button>My own button</Button>
+
+      <DictDisplay hint='test values'>{{ "a": "b", "c": "d" }}</DictDisplay>
     </div>
   );
 }

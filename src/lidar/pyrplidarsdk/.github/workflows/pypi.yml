@@ -1,0 +1,47 @@
+name: tagged release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-publish:
+    name: Build and publish Python distribution to PyPI
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13']
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: 3.13
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update && sudo apt-get install -y qemu-user-static
+        python -m pip install --upgrade pip
+        python -m pip install twine
+
+    - name: Build wheels with cibuildwheel
+      uses: pypa/cibuildwheel@v3.2.0
+      env:
+        CIBW_BUILD: cp${{ matrix.python-version == '3.10' && '310' || matrix.python-version == '3.11' && '311' || matrix.python-version == '3.12' && '312' || matrix.python-version == '3.13' && '313' }}*
+        CIBW_BUILD_VERBOSITY: 1
+        CIBW_BUILD_FRONTEND: "build"
+
+    - name: Publish package to PyPI
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        packages-dir: wheelhouse/

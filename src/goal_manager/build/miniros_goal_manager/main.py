@@ -1,1 +1,0 @@
-# TODO: get goals from web controller and send them
