@@ -1,26 +1,17 @@
 <?xml version="1.0"?>
-<package>
-	<name>slam</name>
-
-	<entrypoint>main.py</entrypoint>
-
-	<requires>
-		<requirement>miniros</requirement>
-	</requires>
+<package name="slam" version="1.0.0">
+	<entrypoint>main</entrypoint>
 
 	<maintainer>Vadimych1</maintainer>
-
-	<description>VBot SLAM based on breezyslam</description>
-
+	<description>yag-slam (OpenKarto) SLAM client</description>
 	<authors>
-		<author>Vadimych1</author>
+		<author email="vadimlebedenko0@gmail.com">Vadimych1 (Vadim Lebedenko)</author>
 	</authors>
 
-	<linux-scripts>
-		<!-- <lscript>cd slam &amp;&amp; bash "scripts/breezyslam-install.sh" PYEXEC &amp;&amp; cd ..</lscript> -->
-	</linux-scripts>
-
-	<windows-scripts>
-		<!-- <wscript>"cd slam &amp;&amp; scripts\\breezyslam-install.bat PYEXEC &amp;&amp; cd .."</wscript> -->
-	</windows-scripts>
+	<requirements>
+		<pip>yag-slam&gt;=0.3.0</pip>
+		<pip>tiny-tf&gt;=1.1.0</pip>
+		<pip>karto-scanmatcher&gt;=1.0.0</pip>
+		<miniros>miniros&gt;=1.1.0</miniros>
+	</requirements>
 </package>

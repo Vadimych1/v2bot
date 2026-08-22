@@ -1,21 +1,15 @@
-<?xml version="1.0"?>
-<package>
-	<name>lidar</name>
-	<entrypoint>main.py</entrypoint>
-	<requires>
-		<requirement>miniros</requirement>
-	</requires>
+<?xml version="1.0" ?>
+<package name="lidar" version="1.0.0">
+	<entrypoint>main</entrypoint>
+
 	<maintainer>Vadimych1</maintainer>
-	<description>VBot Lidar system</description>
+	<description>RPLidar scan grabber</description>
 	<authors>
-		<author>Vadimych1</author>
+		<author email="vadimlebedenko0@gmail.com">Vadimych1 (Vadim Lebedenko)</author>
 	</authors>
 
-	<linux-scripts>
-		<lscript>cd lidar &amp;&amp; bash "scripts/pyrplidarsdk-install.sh" PYEXEC &amp;&amp; cd ..</lscript>
-	</linux-scripts>
-
-	<windows-scripts>
-		<wscript>"cd lidar &amp;&amp; scripts\\pyrplidarsdk-install.bat PYEXEC &amp;&amp; cd .."</wscript>
-	</windows-scripts>
+	<requirements>
+		<pip>pyrplidarsdk @ file://{root}/../pyrplidarsdk</pip>
+		<miniros>miniros&gt;=1.1.0</miniros>
+	</requirements>
 </package>

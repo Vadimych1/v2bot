@@ -1,7 +1,7 @@
 import asyncio
 import base64
 import io
-import json
+import importlib.resources
 import uvicorn
 import numpy as np
 from PIL import Image
@@ -105,7 +105,13 @@ client = GoalManagerClient()
 
 @app.get("/")
 async def index():
-    return FileResponse("web/index.html")
+    return FileResponse(
+        str(
+            importlib.resources.files("miniros_visual_goal_manager").joinpath(
+                "web/index.html"
+            )
+        )
+    )
 
 
 @app.websocket("/ws")

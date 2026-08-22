@@ -1,16 +1,16 @@
-<?xml version="1.0" ?>
-<package>
-	<name>path_planner</name>
-	<entrypoint>main.py</entrypoint>
-	<requires/>
-	<maintainer>todo</maintainer>
-	<description>todo</description>
-	<authors/>
-	<python-packages/>
-	<linux-scripts>
-		<lscript/>
-	</linux-scripts>
-	<windows-scripts>
-		<wscript/>
-	</windows-scripts>
+<?xml version="1.0"?>
+<package name="path_planner" version="1.0.0">
+	<entrypoint>main</entrypoint>
+
+	<maintainer>Vadimych1</maintainer>
+	<description>RRT* Path Planner</description>
+	<authors>
+		<author email="vadimlebedenko0@gmail.com">Vadimych1 (Vadim Lebedenko)</author>
+	</authors>
+
+	<requirements>
+		<pip>numpy&gt;=2.5.0</pip>
+		<miniros>miniros&gt;=1.1.0</miniros>
+		<miniros>miniros_slam&gt;=1.0.0</miniros>
+	</requirements>
 </package>

@@ -1,11 +1,10 @@
-from miniros.util.datatypes import Movement, NumpyArray, Vector
+from miniros.util.datatypes import NumpyArray, Vector
 from miniros_slam.source.datatypes import SLAMOffsetMap
 from miniros.util.decorators import aparsedata
 from miniros import AsyncROSClient
 from scipy.ndimage import distance_transform_edt
 import numpy as np
 import asyncio
-import time
 import math
 
 class MotionControllerConfig:

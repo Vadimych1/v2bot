@@ -1,0 +1,1075 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <title>Robot Navigation</title>
+
+    <style>
+        html,
+        body {
+
+            margin: 0;
+            padding: 0;
+
+            width: 100%;
+            height: 100%;
+
+            overflow: hidden;
+
+            background: #202020;
+
+            font-family: Arial, sans-serif;
+        }
+
+        #map {
+
+            position: absolute;
+
+            left: 0;
+            top: 0;
+
+            width: 100%;
+            height: 100%;
+
+            cursor: crosshair;
+        }
+
+        #info {
+
+            position: absolute;
+
+            left: 10px;
+            top: 10px;
+
+            padding: 10px 14px;
+
+            background: rgba(0, 0, 0, 0.75);
+
+            color: white;
+
+            border-radius: 6px;
+
+            font-family: monospace;
+
+            line-height: 1.5;
+        }
+
+        #controls {
+
+            position: absolute;
+
+            right: 10px;
+            top: 10px;
+
+            display: flex;
+
+            gap: 5px;
+        }
+
+        button {
+
+            padding: 8px 12px;
+
+            border: none;
+
+            border-radius: 5px;
+
+            cursor: pointer;
+        }
+
+        button:hover {
+
+            background: #ddd;
+        }
+    </style>
+
+</head>
+
+<body>
+
+    <canvas id="map"></canvas>
+
+    <div id="info">
+        Connecting...
+    </div>
+
+    <div id="controls">
+
+        <button onclick="centerRobot()">
+            Center robot
+        </button>
+
+        <button onclick="fitMap()">
+            Fit map
+        </button>
+
+        <button onclick="clearGoal()">
+            Clear goal
+        </button>
+
+    </div>
+
+    <script>
+
+        const canvas =
+            document.getElementById("map");
+
+        const ctx =
+            canvas.getContext("2d");
+
+
+        let mapData = null;
+
+        let mapImage = null;
+
+        let robot = null;
+
+        let globalPath = [];
+
+        let goal = null;
+
+
+        /*
+         * Camera:
+         *
+         * camera.x/y are world coordinates
+         * at the center of the screen.
+         *
+         * zoom = pixels per meter.
+         */
+
+        let camera = {
+
+            x: 0,
+            y: 0,
+
+            zoom: 50
+        };
+
+
+        /*
+         * Mouse state
+         */
+
+        let dragging = false;
+
+        let lastMouseX = 0;
+        let lastMouseY = 0;
+
+
+        /* ============================================================
+         * RESIZE
+         * ========================================================= */
+
+        function resizeCanvas() {
+
+            canvas.width =
+                window.innerWidth;
+
+            canvas.height =
+                window.innerHeight;
+
+            draw();
+        }
+
+
+        window.addEventListener(
+            "resize",
+            resizeCanvas
+        );
+
+
+        /* ============================================================
+         * WORLD → SCREEN
+         * ========================================================= */
+
+        function worldToScreen(x, y) {
+
+            return {
+
+                x:
+                    canvas.width / 2
+                    + (x - camera.x)
+                    * camera.zoom,
+
+                y:
+                    canvas.height / 2
+                    - (y - camera.y)
+                    * camera.zoom
+            };
+        }
+
+
+        /* ============================================================
+         * SCREEN → WORLD
+         * ========================================================= */
+
+        function screenToWorld(x, y) {
+
+            return {
+
+                x:
+                    camera.x
+                    + (x - canvas.width / 2)
+                    / camera.zoom,
+
+                y:
+                    camera.y
+                    - (y - canvas.height / 2)
+                    / camera.zoom
+            };
+        }
+
+
+        /* ============================================================
+         * MAP PIXEL → WORLD
+         * ========================================================= */
+
+        function mapPixelToWorld(px, py) {
+
+            return {
+
+                x:
+                    (px - mapData.offset_x)
+                    * mapData.resolution,
+
+                y:
+                    (py - mapData.offset_y)
+                    * mapData.resolution
+            };
+        }
+
+
+        /* ============================================================
+         * WORLD → MAP PIXEL
+         * ============================================================ */
+
+        function worldToMapPixel(x, y) {
+
+            return {
+
+                x:
+                    x / mapData.resolution
+                    + mapData.offset_x,
+
+                y:
+                    y / mapData.resolution
+                    + mapData.offset_y
+            };
+        }
+
+
+        /* ============================================================
+         * DRAW
+         * ============================================================ */
+
+        function draw() {
+
+            ctx.clearRect(
+                0,
+                0,
+                canvas.width,
+                canvas.height
+            );
+
+            if (!mapData || !mapImage)
+                return;
+
+
+            drawMap();
+
+            drawGlobalPath();
+
+            drawGoal();
+
+            drawRobot();
+
+        }
+
+
+        /* ============================================================
+         * DRAW MAP
+         * ============================================================ */
+
+        function drawMap() {
+
+            /*
+             * Convert map image corners into world coordinates.
+             */
+
+            const topLeft =
+                mapPixelToWorld(
+                    0,
+                    0
+                );
+
+            const bottomRight =
+                mapPixelToWorld(
+                    mapData.width,
+                    mapData.height
+                );
+
+
+            const p1 =
+                worldToScreen(
+                    topLeft.x,
+                    topLeft.y
+                );
+
+            const p2 =
+                worldToScreen(
+                    bottomRight.x,
+                    bottomRight.y
+                );
+
+
+            const x =
+                p1.x;
+
+            const y =
+                p2.y;
+
+            const width =
+                p2.x - p1.x;
+
+            const height =
+                p1.y - p2.y;
+
+
+            /*
+             * The canvas Y axis points down,
+             * while the world Y axis points up.
+             *
+             * Therefore flip the map vertically.
+             */
+
+            ctx.save();
+
+            ctx.translate(
+                x,
+                y + height
+            );
+
+            ctx.scale(
+                1,
+                -1
+            );
+
+            ctx.drawImage(
+                mapImage,
+                0,
+                0,
+                width,
+                height
+            );
+
+            ctx.restore();
+        }
+
+
+        /* ============================================================
+         * DRAW GLOBAL PATH
+         * ============================================================ */
+
+        function drawGlobalPath() {
+
+            if (
+                !globalPath ||
+                globalPath.length < 2
+            )
+                return;
+
+
+            ctx.beginPath();
+
+
+            for (
+                let i = 0;
+                i < globalPath.length;
+                i++
+            ) {
+
+                const point =
+                    globalPath[i];
+
+                const p =
+                    worldToScreen(
+                        point.x,
+                        point.y
+                    );
+
+
+                if (i === 0) {
+
+                    ctx.moveTo(
+                        p.x,
+                        p.y
+                    );
+
+                } else {
+
+                    ctx.lineTo(
+                        p.x,
+                        p.y
+                    );
+                }
+            }
+
+
+            ctx.lineWidth = 3;
+
+            ctx.strokeStyle =
+                "#00aaff";
+
+            ctx.stroke();
+        }
+
+
+        /* ============================================================
+         * DRAW ROBOT
+         * ============================================================ */
+
+        function drawRobot() {
+
+            if (!robot)
+                return;
+
+
+            const p =
+                worldToScreen(
+                    robot.x,
+                    robot.y
+                );
+
+
+            const radius =
+                0.2 * camera.zoom;
+
+
+            ctx.save();
+
+
+            ctx.translate(
+                p.x,
+                p.y
+            );
+
+
+            /*
+             * Robot heading.
+             *
+             * Canvas Y points downward,
+             * so negate the angle.
+             */
+
+            ctx.rotate(
+                -robot.heading
+            );
+
+
+            /*
+             * Robot body
+             */
+
+            ctx.beginPath();
+
+            ctx.arc(
+                0,
+                0,
+                radius,
+                0,
+                Math.PI * 2
+            );
+
+            ctx.fillStyle =
+                "#ff4444";
+
+            ctx.fill();
+
+
+            /*
+             * Heading arrow
+             */
+
+            ctx.beginPath();
+
+            ctx.moveTo(
+                0,
+                0
+            );
+
+            ctx.lineTo(
+                radius * 1.8,
+                0
+            );
+
+            ctx.strokeStyle =
+                "#ffffff";
+
+            ctx.lineWidth = 3;
+
+            ctx.stroke();
+
+
+            /*
+             * Arrow head
+             */
+
+            ctx.beginPath();
+
+            ctx.moveTo(
+                radius * 1.8,
+                0
+            );
+
+            ctx.lineTo(
+                radius * 1.3,
+                -radius * 0.35
+            );
+
+            ctx.lineTo(
+                radius * 1.3,
+                radius * 0.35
+            );
+
+            ctx.closePath();
+
+            ctx.fillStyle =
+                "#ffffff";
+
+            ctx.fill();
+
+
+            ctx.restore();
+        }
+
+
+        /* ============================================================
+         * DRAW GOAL
+         * ============================================================ */
+
+        function drawGoal() {
+
+            if (!goal)
+                return;
+
+
+            const p =
+                worldToScreen(
+                    goal.x,
+                    goal.y
+                );
+
+
+            const size = 10;
+
+
+            ctx.beginPath();
+
+            ctx.moveTo(
+                p.x - size,
+                p.y - size
+            );
+
+            ctx.lineTo(
+                p.x + size,
+                p.y + size
+            );
+
+            ctx.moveTo(
+                p.x + size,
+                p.y - size
+            );
+
+            ctx.lineTo(
+                p.x - size,
+                p.y + size
+            );
+
+
+            ctx.strokeStyle =
+                "#ffcc00";
+
+            ctx.lineWidth = 3;
+
+            ctx.stroke();
+        }
+
+
+        /* ============================================================
+         * CLICK → GOAL
+         * ============================================================ */
+
+        canvas.addEventListener(
+            "click",
+            event => {
+
+                if (!mapData)
+                    return;
+
+
+                /*
+                 * Ignore click if it was actually
+                 * the end of a drag operation.
+                 */
+
+                if (dragging)
+                    return;
+
+
+                const rect =
+                    canvas.getBoundingClientRect();
+
+
+                const sx =
+                    event.clientX -
+                    rect.left;
+
+                const sy =
+                    event.clientY -
+                    rect.top;
+
+
+                const world =
+                    screenToWorld(
+                        sx,
+                        sy
+                    );
+
+
+                goal = {
+
+                    x: world.x,
+                    y: world.y
+                };
+
+
+                sendGoal(
+                    world.x,
+                    world.y
+                );
+
+
+                draw();
+            }
+        );
+
+
+        /* ============================================================
+         * SEND GOAL
+         * ============================================================ */
+
+        function sendGoal(x, y) {
+
+            if (
+                !socket ||
+                socket.readyState !== WebSocket.OPEN
+            )
+                return;
+
+
+            socket.send(
+                JSON.stringify({
+
+                    type: "goal",
+
+                    x: x,
+                    y: y
+                })
+            );
+        }
+
+
+        /* ============================================================
+         * CLEAR GOAL
+         * ============================================================ */
+
+        function clearGoal() {
+
+            goal = null;
+
+            draw();
+        }
+
+
+        /* ============================================================
+         * CENTER ROBOT
+         * ============================================================ */
+
+        function centerRobot() {
+
+            if (!robot)
+                return;
+
+
+            camera.x =
+                robot.x;
+
+            camera.y =
+                robot.y;
+
+
+            draw();
+        }
+
+
+        /* ============================================================
+         * FIT MAP
+         * ============================================================ */
+
+        function fitMap() {
+
+            if (!mapData)
+                return;
+
+
+            const minX =
+                -mapData.offset_x *
+                mapData.resolution;
+
+            const maxX =
+                (mapData.width -
+                    mapData.offset_x) *
+                mapData.resolution;
+
+
+            const minY =
+                -mapData.offset_y *
+                mapData.resolution;
+
+            const maxY =
+                (mapData.height -
+                    mapData.offset_y) *
+                mapData.resolution;
+
+
+            camera.x =
+                (minX + maxX) / 2;
+
+            camera.y =
+                (minY + maxY) / 2;
+
+
+            const worldWidth =
+                maxX - minX;
+
+            const worldHeight =
+                maxY - minY;
+
+
+            camera.zoom =
+                Math.min(
+
+                    canvas.width /
+                    worldWidth,
+
+                    canvas.height /
+                    worldHeight
+
+                ) * 0.9;
+
+
+            draw();
+        }
+
+        /* ============================================================
+         * ZOOM
+         * ============================================================ */
+
+        canvas.addEventListener(
+            "wheel",
+            event => {
+
+                event.preventDefault();
+
+
+                const rect =
+                    canvas.getBoundingClientRect();
+
+
+                const mouseX =
+                    event.clientX -
+                    rect.left;
+
+                const mouseY =
+                    event.clientY -
+                    rect.top;
+
+
+                /*
+                 * World position under cursor
+                 * before zoom.
+                 */
+
+                const before =
+                    screenToWorld(
+                        mouseX,
+                        mouseY
+                    );
+
+
+                const factor =
+                    event.deltaY < 0
+                        ? 1.15
+                        : 1 / 1.15;
+
+
+                camera.zoom *= factor;
+
+
+                /*
+                 * Keep the same world position
+                 * under the mouse cursor.
+                 */
+
+                const after =
+                    screenToWorld(
+                        mouseX,
+                        mouseY
+                    );
+
+
+                camera.x +=
+                    before.x - after.x;
+
+                camera.y +=
+                    before.y - after.y;
+
+
+                draw();
+            },
+            {
+                passive: false
+            }
+        );
+
+
+        /* ============================================================
+         * PAN
+         * ============================================================ */
+
+        canvas.addEventListener(
+            "mousedown",
+            event => {
+
+                if (event.button !== 1)
+                    return;
+
+
+                dragging = true;
+
+                lastMouseX =
+                    event.clientX;
+
+                lastMouseY =
+                    event.clientY;
+            }
+        );
+
+
+        canvas.addEventListener(
+            "mousemove",
+            event => {
+
+                if (!dragging)
+                    return;
+
+
+                const dx =
+                    event.clientX -
+                    lastMouseX;
+
+                const dy =
+                    event.clientY -
+                    lastMouseY;
+
+
+                camera.x -=
+                    dx / camera.zoom;
+
+                camera.y +=
+                    dy / camera.zoom;
+
+
+                lastMouseX =
+                    event.clientX;
+
+                lastMouseY =
+                    event.clientY;
+
+
+                draw();
+            }
+        );
+
+
+        window.addEventListener(
+            "mouseup",
+            event => {
+
+                if (event.button === 1)
+                    dragging = false;
+            }
+        );
+
+
+        /* ============================================================
+         * WEBSOCKET
+         * ============================================================ */
+
+        const socket =
+            new WebSocket(
+                `ws://${location.host}/ws`
+            );
+
+
+        socket.onopen = () => {
+
+            document.getElementById(
+                "info"
+            ).textContent =
+                "Connected";
+        };
+
+
+        socket.onclose = () => {
+
+            document.getElementById(
+                "info"
+            ).textContent =
+                "Disconnected";
+        };
+
+
+        socket.onerror = () => {
+
+            document.getElementById(
+                "info"
+            ).textContent =
+                "WebSocket error";
+        };
+
+
+        socket.onmessage = event => {
+
+            const message =
+                JSON.parse(
+                    event.data
+                );
+
+
+            /* --------------------------------------------------------
+             * MAP
+             * -------------------------------------------------------- */
+
+            if (message.type === "map") {
+
+                mapData =
+                    message.map;
+
+
+                mapImage =
+                    new Image();
+
+
+                mapImage.onload = () => {
+
+                    /*
+                     * First map received.
+                     */
+
+                    if (
+                        camera.zoom === 50 &&
+                        camera.x === 0 &&
+                        camera.y === 0
+                    ) {
+
+                        fitMap();
+                    }
+
+
+                    draw();
+                };
+
+
+                mapImage.src =
+                    "data:image/png;base64," +
+                    mapData.image;
+            }
+
+
+            /* --------------------------------------------------------
+             * POSE
+             * -------------------------------------------------------- */
+
+            if (message.type === "pose") {
+
+                robot =
+                    message.pose;
+
+
+                draw();
+
+
+                updateInfo();
+            }
+
+
+            /* --------------------------------------------------------
+             * GLOBAL PATH
+             * -------------------------------------------------------- */
+
+            if (message.type === "path") {
+
+                globalPath =
+                    message.path || [];
+
+
+                draw();
+            }
+        };
+
+
+        /* ============================================================
+         * INFO PANEL
+         * ============================================================ */
+
+        function updateInfo() {
+
+            if (!robot)
+                return;
+
+
+            const degrees =
+                robot.heading *
+                180 /
+                Math.PI;
+
+
+            document.getElementById(
+                "info"
+            ).textContent =
+
+                `X: ${robot.x.toFixed(3)} m\n` +
+
+                `Y: ${robot.y.toFixed(3)} m\n` +
+
+                `θ: ${degrees.toFixed(1)}°`;
+        }
+
+
+        /* ============================================================
+         * START
+         * ============================================================ */
+
+        resizeCanvas();
+
+    </script>
+
+</body>
+
+</html>

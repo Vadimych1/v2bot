@@ -1,16 +1,16 @@
 <?xml version="1.0"?>
-<package>
-	<name>motor_controller</name>
-	<entrypoint>main.py</entrypoint>
-	<requires />
-	<maintainer>vadimych1</maintainer>
-	<description>Controls motors speeds and posts odometry data</description>
-	<authors />
-	<python-packages />
-	<linux-scripts>
-		<lscript />
-	</linux-scripts>
-	<windows-scripts>
-		<wscript />
-	</windows-scripts>
+<package name="motor_controller" version="1.0.0">
+	<entrypoint>main</entrypoint>
+
+	<maintainer>Vadimych1</maintainer>
+	<description>Motor controller based on Arduino (see sketch in ./ardu_sketch)</description>
+	<authors>
+		<author email="vadimlebedenko0@gmail.com">Vadimych1 (Vadim Lebedenko)</author>
+	</authors>
+
+	<requirements>
+		<pip>numpy&gt;=2.5.0</pip>
+		<pip>wireio&gt;=0.1.0</pip>
+		<miniros>miniros&gt;=1.1.0</miniros>
+	</requirements>
 </package>

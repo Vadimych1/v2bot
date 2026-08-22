@@ -1,3 +1,3 @@
 
 # Add your importables here
-from source.datatypes import *
+from goal_manager.src.source.datatypes import *

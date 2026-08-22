@@ -1,4 +1,3 @@
-# import cv2
 import asyncio
 import multiprocessing as mp
 from queue import Empty
@@ -11,8 +10,6 @@ from karto_scanmatcher import Pose2
 from yag_slam.models import LocalizedRangeScan
 from tiny_tf.tf import Transform
 from tiny_tf.transformations import quaternion_from_euler
-
-# import time
 
 
 def movement2transform(msg: Movement) -> Transform:

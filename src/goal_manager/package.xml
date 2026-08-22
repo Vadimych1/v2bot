@@ -1,16 +1,15 @@
 <?xml version="1.0" ?>
-<package>
-	<name>goal_manager</name>
-	<entrypoint>main.py</entrypoint>
-	<requires/>
-	<maintainer>todo</maintainer>
-	<description>todo</description>
-	<authors/>
-	<python-packages/>
-	<linux-scripts>
-		<lscript/>
-	</linux-scripts>
-	<windows-scripts>
-		<wscript/>
-	</windows-scripts>
+<package name="goal_manager" version="1.0.0">
+	<entrypoint>main</entrypoint>
+
+	<maintainer>Vadimych1</maintainer>
+	<description>Simple CLI goal manager</description>
+	<authors>
+		<author email="vadimlebedenko0@gmail.com">Vadimych1 (Vadim Lebedenko)</author>
+	</authors>
+
+	<requirements>
+		<pip>aioconsole&gt;=0.8.0</pip>
+		<miniros>miniros&gt;=1.1.0</miniros>
+	</requirements>
 </package>
