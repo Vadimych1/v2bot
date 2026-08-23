@@ -1,3 +1,3 @@
 
 # Add your importables here
-from path_planner.src.source.datatypes import *
+from miniros_path_planner.source.datatypes import *

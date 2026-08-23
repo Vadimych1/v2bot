@@ -1,11 +1,8 @@
 <!DOCTYPE html>
-
 <html>
 
 <head>
-
     <meta charset="UTF-8">
-
     <title>Robot Navigation</title>
 
     <style>
@@ -26,6 +23,7 @@
         }
 
         #map {
+            background-color: white;
 
             position: absolute;
 
@@ -45,17 +43,35 @@
             left: 10px;
             top: 10px;
 
-            padding: 10px 14px;
+            padding: 12px 16px;
 
-            background: rgba(0, 0, 0, 0.75);
+            background: rgba(0, 0, 0, 0.78);
 
             color: white;
 
-            border-radius: 6px;
+            border-radius: 7px;
 
             font-family: monospace;
 
-            line-height: 1.5;
+            line-height: 1.6;
+
+            min-width: 220px;
+        }
+
+        .title {
+
+            font-weight: bold;
+
+            margin-bottom: 4px;
+        }
+
+        .separator {
+
+            height: 1px;
+
+            background: rgba(255, 255, 255, 0.25);
+
+            margin: 8px 0;
         }
 
         #controls {
@@ -94,7 +110,46 @@
     <canvas id="map"></canvas>
 
     <div id="info">
-        Connecting...
+        <div class="title">
+            ROBOT
+        </div>
+
+        <div>
+            X:
+            <span id="robot-x">---</span>
+            m
+        </div>
+
+        <div>
+            Y:
+            <span id="robot-y">---</span>
+            m
+        </div>
+
+        <div>
+            Heading:
+            <span id="robot-heading">---</span>
+            °
+        </div>
+
+        <div class="separator"></div>
+
+        <div class="title">
+            DAW
+        </div>
+
+        <div>
+            Linear:
+            <span id="linear-velocity">---</span>
+            m/s
+        </div>
+
+        <div>
+            Angular:
+            <span id="angular-velocity">---</span>
+            rad/s
+        </div>
+
     </div>
 
     <div id="controls">
@@ -123,15 +178,15 @@
 
 
         let mapData = null;
-
         let mapImage = null;
-
         let robot = null;
-
         let globalPath = [];
-
         let goal = null;
 
+        let cmdvel = {
+            linear: 0,
+            angular: 0
+        };
 
         /*
          * Camera:
@@ -279,15 +334,17 @@
             if (!mapData || !mapImage)
                 return;
 
-
             drawMap();
 
             drawGlobalPath();
 
             drawGoal();
 
-            drawRobot();
+            drawVelocityVector();
 
+            drawAngularVelocity();
+
+            drawRobot();
         }
 
 
@@ -599,6 +656,209 @@
             ctx.stroke();
         }
 
+        function drawAngularVelocity() {
+
+            if (!robot || !cmdvel)
+                return;
+
+
+            if (
+                Math.abs(cmdvel.angular) < 0.001
+            ) {
+                return;
+            }
+
+
+            const p =
+                worldToScreen(
+                    robot.x,
+                    robot.y
+                );
+
+
+            const radius =
+                0.3 * camera.zoom;
+
+
+            const magnitude =
+                Math.min(
+                    Math.abs(cmdvel.angular),
+                    2.0
+                );
+
+
+            /*
+             * Larger angular velocity =
+             * larger arc.
+             */
+
+            const arc =
+                0.6 +
+                magnitude * 0.5;
+
+
+            ctx.save();
+
+            ctx.translate(
+                p.x,
+                p.y
+            );
+
+
+            ctx.beginPath();
+
+
+            /*
+             * Canvas rotation direction is opposite
+             * to the mathematical positive rotation.
+             */
+
+            const direction =
+                Math.sign(
+                    cmdvel.angular
+                );
+
+
+            ctx.arc(
+                0,
+                0,
+                radius,
+                -Math.PI / 2,
+                -Math.PI / 2 +
+                direction * arc,
+                direction < 0
+            );
+
+
+            ctx.strokeStyle =
+                "#ffcc00";
+
+            ctx.lineWidth = 4;
+
+            ctx.stroke();
+
+
+            ctx.restore();
+        }
+
+        function drawVelocityVector() {
+
+            if (!robot || !cmdvel)
+                return;
+
+
+            const p =
+                worldToScreen(
+                    robot.x,
+                    robot.y
+                );
+
+
+            /*
+             * Don't draw the vector when
+             * the commanded velocity is
+             * essentially zero.
+             */
+
+            if (
+                Math.abs(cmdvel.linear) < 0.001 &&
+                Math.abs(cmdvel.angular) < 0.001
+            ) {
+                return;
+            }
+
+
+            /*
+             * Convert linear velocity into
+             * a visually useful arrow length.
+             *
+             * This is visualization scaling,
+             * not physical distance.
+             */
+
+            const arrowLength =
+                cmdvel.linear *
+                camera.zoom *
+                1.5;
+
+
+            ctx.save();
+
+            ctx.translate(
+                p.x,
+                p.y
+            );
+
+            ctx.rotate(
+                -robot.heading
+            );
+
+
+            /*
+             * Linear velocity vector
+             */
+
+            ctx.beginPath();
+
+            ctx.moveTo(
+                0,
+                0
+            );
+
+            ctx.lineTo(
+                arrowLength,
+                0
+            );
+
+
+            ctx.strokeStyle =
+                "#00ff88";
+
+            ctx.lineWidth = 4;
+
+            ctx.stroke();
+
+
+            /*
+             * Arrow head
+             */
+
+            const direction =
+                Math.sign(
+                    cmdvel.linear
+                ) || 1;
+
+
+            ctx.beginPath();
+
+            ctx.moveTo(
+                arrowLength,
+                0
+            );
+
+            ctx.lineTo(
+                arrowLength -
+                direction * 10,
+                -6
+            );
+
+            ctx.moveTo(
+                arrowLength,
+                0
+            );
+
+            ctx.lineTo(
+                arrowLength -
+                direction * 10,
+                6
+            );
+
+
+            ctx.stroke();
+
+
+            ctx.restore();
+        }
 
         /* ============================================================
          * CLICK → GOAL
@@ -927,31 +1187,30 @@
             );
 
 
-        socket.onopen = () => {
-
-            document.getElementById(
-                "info"
-            ).textContent =
-                "Connected";
-        };
-
-
-        socket.onclose = () => {
-
-            document.getElementById(
-                "info"
-            ).textContent =
-                "Disconnected";
-        };
+        // socket.onopen = () => {
+        //     document.getElementById(
+        //         "info"S
+        //     ).textContent =
+        //         "Connected";
+        // };
 
 
-        socket.onerror = () => {
+        // socket.onclose = () => {
 
-            document.getElementById(
-                "info"
-            ).textContent =
-                "WebSocket error";
-        };
+        //     document.getElementById(
+        //         "info"
+        //     ).textContent =
+        //         "Disconnected";
+        // };
+
+
+        // socket.onerror = () => {
+
+        //     document.getElementById(
+        //         "info"
+        //     ).textContent =
+        //         "WebSocket error";
+        // };
 
 
         socket.onmessage = event => {
@@ -962,20 +1221,17 @@
                 );
 
 
-            /* --------------------------------------------------------
-             * MAP
-             * -------------------------------------------------------- */
+            if (message.type === "cmdvel") {
+                cmdvel = message.cmdvel;
+                draw();
+                updateInfo();
+            }
 
             if (message.type === "map") {
-
                 mapData =
                     message.map;
-
-
                 mapImage =
                     new Image();
-
-
                 mapImage.onload = () => {
 
                     /*
@@ -994,8 +1250,6 @@
 
                     draw();
                 };
-
-
                 mapImage.src =
                     "data:image/png;base64," +
                     mapData.image;
@@ -1040,34 +1294,45 @@
 
         function updateInfo() {
 
-            if (!robot)
-                return;
+            if (robot) {
+                document.getElementById(
+                    "robot-x"
+                ).textContent =
+                    robot.x.toFixed(3);
+
+                document.getElementById(
+                    "robot-y"
+                ).textContent =
+                    robot.y.toFixed(3);
 
 
-            const degrees =
-                robot.heading *
-                180 /
-                Math.PI;
+                const degrees =
+                    robot.heading *
+                    180 /
+                    Math.PI;
 
 
-            document.getElementById(
-                "info"
-            ).textContent =
+                document.getElementById(
+                    "robot-heading"
+                ).textContent =
+                    degrees.toFixed(1);
+            }
 
-                `X: ${robot.x.toFixed(3)} m\n` +
+            if (cmdvel) {
 
-                `Y: ${robot.y.toFixed(3)} m\n` +
+                document.getElementById(
+                    "linear-velocity"
+                ).textContent =
+                    cmdvel.linear.toFixed(3);
 
-                `θ: ${degrees.toFixed(1)}°`;
+                document.getElementById(
+                    "angular-velocity"
+                ).textContent =
+                    cmdvel.angular.toFixed(3);
+            }
         }
 
-
-        /* ============================================================
-         * START
-         * ============================================================ */
-
         resizeCanvas();
-
     </script>
 
 </body>

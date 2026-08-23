@@ -14,7 +14,8 @@ readme = "README.md"
 dependencies = [
    "fastapi>=0.141.0",
    "uvicorn>=0.52.4",
-   "pillow>=12.2.0"
+   "pillow>=12.2.0",
+   "websockets>=15.0.0"
 ]
 
 [tool.hatch.build.targets.wheel]

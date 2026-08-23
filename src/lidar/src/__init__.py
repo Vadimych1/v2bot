@@ -1,3 +1,3 @@
 
 # Add your importables here
-from lidar.src.source.datatypes import *
+from miniros_lidar.source.datatypes import *

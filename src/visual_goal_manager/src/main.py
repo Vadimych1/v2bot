@@ -23,8 +23,24 @@ class GoalManagerClient(AsyncROSClient):
         self.latest_map = None
         self.latest_pose = None
         self.latest_path = None
+        self.latest_cmdvel = None
 
         self.web_clients: set[WebSocket] = set()
+
+    @aparsedata(datatypes.Vector)
+    async def on_motioncontroller_cmdvel(
+        self,
+        data: datatypes.Vector
+    ):
+        self.latest_cmdvel = {
+            "linear": float(data.x),
+            "angular": float(data.y)
+        }
+
+        await self.broadcast({
+            "type": "cmdvel",
+            "cmdvel": self.latest_cmdvel
+        })
 
     @aparsedata(SLAMOffsetMap)
     async def on_slam_map(self, data):
@@ -50,10 +66,10 @@ class GoalManagerClient(AsyncROSClient):
         await self.broadcast({"type": "path", "path": self.latest_path})
 
     def encode_map(self, data):
-        grid = np.asarray(data["grid"])
+        grid = np.asarray(data.grid)
 
-        width = int(data["width"])
-        height = int(data["height"])
+        width = int(data.width)
+        height = int(data.height)
 
         image = np.full((height, width), 127, dtype=np.uint8)
 
@@ -74,9 +90,9 @@ class GoalManagerClient(AsyncROSClient):
             "height": height,
             # IMPORTANT:
             # These are PIXEL offsets of world (0, 0).
-            "offset_x": float(data["offset_x"]),
-            "offset_y": float(data["offset_y"]),
-            "resolution": float(data["resolution"]),
+            "offset_x": float(data.offset_x),
+            "offset_y": float(data.offset_y),
+            "resolution": float(data.resolution),
         }
 
     async def broadcast_map(self, data):
@@ -131,13 +147,15 @@ async def websocket_endpoint(websocket: WebSocket):
 
         if client.latest_path is not None:
             await websocket.send_json({"type": "path", "path": client.latest_path})
+            
+        if client.latest_cmdvel is not None:
+            await websocket.send_json({"type": "cmdvel", "cmdvel": client.latest_cmdvel})
 
         while True:
             message = await websocket.receive_json()
             message_type = message.get("type")
 
             if message_type == "goal":
-
                 x = float(message["x"])
                 y = float(message["y"])
 
@@ -155,10 +173,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 async def ros_task():
-    await asyncio.gather(
-        client.wait(),
-        client.run(),
-    )
+    await client.run()
 
 
 async def web_task():
@@ -169,8 +184,11 @@ async def web_task():
 
 
 async def main():
-    client.goal_topic = await client.topic("currentgoal", datatypes.Vector)
-    await asyncio.gather(ros_task(), web_task())
+    async def _job():
+        await client.wait()
+        client.goal_topic = await client.topic("currentgoal", datatypes.Vector)
+
+    await asyncio.gather(ros_task(), web_task(), _job())
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@
 		<pip>fastapi&gt;=0.141.0</pip>
 		<pip>uvicorn&gt;=0.52.4</pip>
 		<pip>pillow&gt;=12.2.0</pip>
+		<pip>websockets&gt;=15.0.0</pip>
 		<miniros>miniros&gt;=1.1.0</miniros>
 		<miniros>miniros_slam&gt;=1.0.0</miniros>
 	</requirements>
