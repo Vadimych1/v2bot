@@ -1,20 +1,21 @@
 import time
 import asyncio
+
 import numpy as np
 import cv2 as cv
+
 from miniros import AsyncROSClient
 from miniros.util.decorators import aparsedata
 from miniros_slam.source.datatypes import SLAMOffsetMap
 from miniros.util.datatypes import Movement, Vector, NumpyArray
+from miniros_configurator import get_config
 
 
 class PathPlanner(AsyncROSClient):
-    def __init__(
-        self, robot_radius_m=0.25, ip="localhost", port=3000, _parse_handlers=True
-    ):
+    def __init__(self, ip="localhost", port=3000, _parse_handlers=True):
         super().__init__("pathplanner", ip, port, _parse_handlers)
 
-        self.robot_radius_m = robot_radius_m
+        self.robot_radius_m = get_config("robot_radius")
 
         # grid map retrieved from slam
         self.grid = None
@@ -41,10 +42,16 @@ class PathPlanner(AsyncROSClient):
         self.end_pos = None
 
         # world size
-        self.min_x = -7
-        self.min_y = -7
-        self.max_x = 17
-        self.max_y = 17
+        world = get_config("path_planner.world")
+        self.min_x = world["min_x"]
+        self.min_y = world["min_y"]
+        self.max_x = world["max_x"]
+        self.max_y = world["max_y"]
+
+        self._obstacle_upper_threshold = get_config("obstacle_upper_threshold")
+        self._greedy_shortcut_max_lookahead = get_config(
+            "path_planner.pathfinder.greedy_shortcut_max_lookahead"
+        )
 
     def _dilate_grid(self) -> bool:
         if self.grid is None:
@@ -56,7 +63,9 @@ class PathPlanner(AsyncROSClient):
             cv.MORPH_RECT, (2 * robot_r + 1, 2 * robot_r + 1)
         )
 
-        obstacle_mask = (self.grid < 40).astype(np.uint8) * 255
+        obstacle_mask = (self.grid < self._obstacle_upper_threshold).astype(
+            np.uint8
+        ) * 255
         dilated_mask = cv.dilate(obstacle_mask, kernel, iterations=1)
 
         self.dilated_grid = self.grid.copy()
@@ -90,7 +99,10 @@ class PathPlanner(AsyncROSClient):
         if px < 0 or px >= self.d_width or py < 0 or py >= self.d_height:
             return self.min_x < wx < self.max_x and self.min_y < wy < self.max_y
 
-        if self.start_pos is not None and self._distance((wx, wy), self.start_pos) <= self.robot_radius_m:
+        if (
+            self.start_pos is not None
+            and self._distance((wx, wy), self.start_pos) <= self.robot_radius_m
+        ):
             return True
 
         if self.dilated_grid is not None:
@@ -320,7 +332,9 @@ class PathPlanner(AsyncROSClient):
                 path_pixel.reverse()
 
                 # optimize path
-                path_pixel = self._greedy_shortcut(path_pixel, max_lookahead=100)
+                path_pixel = self._greedy_shortcut(
+                    path_pixel, max_lookahead=self._greedy_shortcut_max_lookahead
+                )
                 path_world = [self._pixel_to_world(p) for p in path_pixel]
 
                 return path_world
@@ -359,6 +373,21 @@ class PathPlanner(AsyncROSClient):
 async def main():
     client = PathPlanner()
 
+    rebuild_check_time = get_config("path_planner.miniros.rebuild_check_time")
+    max_no_rebuild_time = get_config("path_planner.miniros.max_no_rebuild_time")
+
+    min_distance_from_start_to_goal = get_config(
+        "path_planner.pathfinder.min_distance_from_start_to_goal"
+    )
+    min_distance_between_goals = get_config(
+        "path_planner.pathfinder.min_distance_between_goals"
+    )
+
+    max_iter = get_config("path_planner.pathfinder.max_iter")
+    step_size = get_config("path_planner.pathfinder.step_size_px")
+    goal_tolerance = get_config("path_planner.pathfinder.goal_tolerance_px")
+    search_radius_factor = get_config("path_planner.pathfinder.search_radius_factor")
+
     async def run():
         await client.wait()
 
@@ -367,25 +396,33 @@ async def main():
         prev_goal = None
         k = 0
         while True:
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(rebuild_check_time)
             k += 1
 
             needs_rebuild = client.end_pos is not None and (
                 prev_goal is None
                 or (
                     prev_goal is not None
-                    and client._distance(client.end_pos, prev_goal) > 0.1
+                    and client._distance(client.end_pos, prev_goal)
+                    > min_distance_between_goals
                 )
                 or (
-                    k >= 150
+                    k >= max_no_rebuild_time / rebuild_check_time
                     and client.start_pos is not None
-                    and client._distance(client.start_pos, client.end_pos) > 0.5
+                    and client._distance(client.start_pos, client.end_pos)
+                    > min_distance_from_start_to_goal
                 )
             )
 
             if needs_rebuild:
                 build_start = time.time()
-                path = await asyncio.to_thread(client.find_path)
+                path = await asyncio.to_thread(
+                    client.find_path,
+                    max_iter=max_iter,
+                    step_size=step_size,
+                    goal_tolerance=goal_tolerance,
+                    search_radius_factor=search_radius_factor,
+                )
                 build_end = time.time()
 
                 k = 0
@@ -393,7 +430,7 @@ async def main():
                 if path is None:
                     await path_topic.post([])
                     print(f"[] Failed path in {build_end - build_start} seconds")
-                    
+
                 else:
                     await path_topic.post(np.asarray(path))
                     print(f"[] Built path in {build_end - build_start} seconds")

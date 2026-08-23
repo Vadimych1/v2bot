@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "miniros_configurator"
+version = "1.0.0"
+description = "JSON-file configurator"
+authors = [
+    {name = "Vaimych1", email = "vadimlebedenko0@gmail.com"}
+]
+requires-python = ">=3.9"
+readme = "README.md"
+dependencies = [
+   
+]
+
+[tool.hatch.build.targets.wheel]
+artifacts = ["miniros_configurator/*.xml", "miniros_configurator/*.json"]
+packages = ["miniros_configurator/"]
+
+[tool.hatch.metadata]
+allow-direct-references = true

@@ -1,15 +1,18 @@
 import asyncio
-import multiprocessing as mp
 from queue import Empty
+import multiprocessing as mp
+
+from karto_scanmatcher import Pose2
+from yag_slam.graph_slam import GraphSlam
+from yag_slam.models import LocalizedRangeScan
+from yag_slam.scan_matching import Scan2DMatcherCpp
+from tiny_tf.tf import Transform
+from tiny_tf.transformations import quaternion_from_euler
+
+from miniros_configurator import get_config
 from miniros import AsyncROSClient, datatypes
 from miniros_slam.source.datatypes import SLAMOffsetMap
 from miniros.util.datatypes import Movement, Vector
-from yag_slam.graph_slam import GraphSlam
-from yag_slam.scan_matching import Scan2DMatcherCpp
-from karto_scanmatcher import Pose2
-from yag_slam.models import LocalizedRangeScan
-from tiny_tf.tf import Transform
-from tiny_tf.transformations import quaternion_from_euler
 
 
 def movement2transform(msg: Movement) -> Transform:
@@ -23,28 +26,8 @@ def pose2movement(pose: Pose2) -> Movement:
 
 
 def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
-    seq_scan_matcher_config = {
-        "angle_variance_penalty": 0.349,
-        "distance_variance_penalty": 0.3,
-        "coarse_search_angle_offset": 0.349,
-        "coarse_angle_resolution": 0.0349,
-        "fine_search_angle_resolution": 0.0174,
-        "use_response_expansion": True,
-        "range_threshold": 20,
-        "minimum_angle_penalty": 0.9,
-        "search_size": 1.0,
-        "resolution": 0.05,
-        "smear_deviation": 0.09,
-    }
-
-    loop_scan_matcher_config = seq_scan_matcher_config.copy()
-    loop_scan_matcher_config.update(
-        {
-            "search_size": 2.0,
-            "resolution": 0.05,
-            "smear_deviation": 0.03,
-        }
-    )
+    seq_scan_matcher_config = get_config("slam.seq_scan_matcher")
+    loop_scan_matcher_config = get_config("slam.loop_scan_matcher")
 
     seq_matcher = Scan2DMatcherCpp(seq_scan_matcher_config)
     loop_matcher = Scan2DMatcherCpp(loop_scan_matcher_config, loop=True)
@@ -52,13 +35,18 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
     mapper = GraphSlam(
         seq_matcher,
         loop_matcher,
-        scan_buffer_len=10,
-        min_response_coarse=0.3,
-        min_response_fine=0.4,
+        scan_buffer_len=get_config("slam.scan_buffer_len"),
+        min_response_coarse=get_config("slam.min_response_coarse"),
+        min_response_fine=get_config("slam.min_response_fine"),
     )
 
     map_counter = 0
-    resolution = 0.05
+    map_resolution = get_config("slam.mapping.resolution")
+    map_range_threshold = get_config("slam.mapping.range_threshold")
+
+    lidar_min_distance = get_config("slam.lidar.min_distance")
+    lidar_max_distance = get_config("slam.lidar.max_distance")
+    lidar_range_threshold = get_config("slam.lidar.range_threshold")
 
     while True:
         try:
@@ -88,9 +76,9 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
             start_ang,
             end_ang,
             step,
-            0.04,
-            20,
-            8,
+            lidar_min_distance,
+            lidar_max_distance,
+            lidar_range_threshold,
             pose.x,
             pose.y,
             pose.z,
@@ -104,16 +92,17 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
         mmap_data = None
 
         if map_counter % 3 == 0:
-            grid = mapper.make_occupancy_grid(resolution, 8)
+            grid = mapper.make_occupancy_grid(
+                map_resolution,
+                map_range_threshold,
+            )
             mmap_data = SLAMOffsetMap(
                 grid=grid.image,
                 width=grid.width,
                 height=grid.height,
-                offset_x=-int(grid.offset.x / resolution),  # offset is negative because
-                offset_y=-int(
-                    grid.offset.y / resolution
-                ),  # it is given in world coordinates
-                resolution=resolution,
+                offset_x=-int(grid.offset.x / map_resolution),
+                offset_y=-int(grid.offset.y / map_resolution),
+                resolution=map_resolution,
             )
 
             mmap_data = SLAMOffsetMap.encode(mmap_data)
@@ -126,13 +115,11 @@ class SLAMClient(AsyncROSClient):
     def __init__(self, ip="localhost", port=3000):
         super().__init__("slam", ip, port)
 
-        # self.mapper = None
-
         self.dxy = 0
         self.dtheta = 0
         self.dt = 0
 
-        self.scan_queue = mp.Queue(10)
+        self.scan_queue = mp.Queue(get_config("slam.miniros.scan_queue_len"))
         self.result_queue = mp.Queue()
 
         self.last_pos: datatypes.Movement | None = None
@@ -140,8 +127,6 @@ class SLAMClient(AsyncROSClient):
 
         self.running = asyncio.Event()
         self.slam_proc = None
-
-        # self._map_counter = 0
 
     def start_slam_process(self):
         self.running.set()
@@ -193,22 +178,23 @@ async def main():
     client = SLAMClient()
     client.start_slam_process()
 
-    # posts last pos at 10hz
+    map_post_delay = get_config("slam.miniros.map_post_delay")
+    pose_post_delay = get_config("slam.miniros.pose_post_delay")
+
     async def post_pos_job():
         await client.wait()
 
         # miniros allows you to send and receive data with any type you want
-        # here we sending pre-encoded Movement bytes but on the other end we
-        # will parse it as Movement using @aparsedata
+        # here we are sending pre-encoded Movement bytes but on the other end
+        # we will parse it as Movement using @aparsedata
         pos_topic = await client.topic("pose", datatypes.Bytes)
 
         while client.running.is_set():
             if client.last_pos is not None:
                 await pos_topic.post(client.last_pos)
 
-            await asyncio.sleep(1 / 10)
+            await asyncio.sleep(pose_post_delay)
 
-    # posts last map at 2hz
     async def post_map_job():
         await client.wait()
 
@@ -218,11 +204,11 @@ async def main():
             if client.last_map is not None:
                 await map_topic.post(client.last_map)
 
-            await asyncio.sleep(1 / 2)
+            await asyncio.sleep(map_post_delay)
 
     async def run():
         await client.wait()
-        await client.anon("lidar", "ping", b"hi")
+        # await client.anon("lidar", "ping", b"hi")
 
     try:
         await asyncio.gather(

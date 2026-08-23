@@ -1,14 +1,17 @@
-import asyncio
-import base64
-import io
-import importlib.resources
-import uvicorn
+import base64, io
 import numpy as np
 from PIL import Image
+
+import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
+import uvicorn
+
 from miniros import AsyncROSClient, datatypes, aparsedata
 from miniros_slam.source.datatypes import SLAMOffsetMap
+from miniros_configurator import get_config
+
+import importlib.resources
 
 app = FastAPI()
 
@@ -27,20 +30,14 @@ class GoalManagerClient(AsyncROSClient):
 
         self.web_clients: set[WebSocket] = set()
 
-    @aparsedata(datatypes.Vector)
-    async def on_motioncontroller_cmdvel(
-        self,
-        data: datatypes.Vector
-    ):
-        self.latest_cmdvel = {
-            "linear": float(data.x),
-            "angular": float(data.y)
-        }
+        self._obstacle_upper_threshold = get_config("obstacle_upper_threshold")
+        self._free_lower_threshold = get_config("free_lower_threshold")
 
-        await self.broadcast({
-            "type": "cmdvel",
-            "cmdvel": self.latest_cmdvel
-        })
+    @aparsedata(datatypes.Vector)
+    async def on_motioncontroller_cmdvel(self, data: datatypes.Vector):
+        self.latest_cmdvel = {"linear": float(data.x), "angular": float(data.y)}
+
+        await self.broadcast({"type": "cmdvel", "cmdvel": self.latest_cmdvel})
 
     @aparsedata(SLAMOffsetMap)
     async def on_slam_map(self, data):
@@ -73,8 +70,8 @@ class GoalManagerClient(AsyncROSClient):
 
         image = np.full((height, width), 127, dtype=np.uint8)
 
-        image[grid > 40] = 255
-        image[grid <= 40] = 0
+        image[grid > self._free_lower_threshold] = 255
+        image[grid <= self._obstacle_upper_threshold] = 0
 
         pil_image = Image.fromarray(image, mode="L")
 
@@ -147,9 +144,11 @@ async def websocket_endpoint(websocket: WebSocket):
 
         if client.latest_path is not None:
             await websocket.send_json({"type": "path", "path": client.latest_path})
-            
+
         if client.latest_cmdvel is not None:
-            await websocket.send_json({"type": "cmdvel", "cmdvel": client.latest_cmdvel})
+            await websocket.send_json(
+                {"type": "cmdvel", "cmdvel": client.latest_cmdvel}
+            )
 
         while True:
             message = await websocket.receive_json()
@@ -177,7 +176,10 @@ async def ros_task():
 
 
 async def web_task():
-    config = uvicorn.Config(app, host="0.0.0.0", port=8080)
+    host = get_config("web.host")
+    port = get_config("web.port")
+
+    config = uvicorn.Config(app, host=host, port=port)
     server = uvicorn.Server(config)
 
     await server.serve()

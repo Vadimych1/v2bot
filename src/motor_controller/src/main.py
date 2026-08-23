@@ -1,11 +1,14 @@
-from miniros_motor_controller.source.vserial import ArduinoSerial
-from miniros.util.decorators import aparsedata
-from miniros import AsyncROSClient, datatypes
 import numpy as np
+
 import signal
 import platform
 import asyncio
 import time
+
+from miniros_motor_controller.source.vserial import ArduinoSerial
+from miniros.util.decorators import aparsedata
+from miniros import AsyncROSClient, datatypes
+from miniros_configurator import get_config
 
 
 class TrackedRobotIK:
@@ -31,16 +34,21 @@ class MotorControllerClient(AsyncROSClient):
         # TODO: maybe add port definition
         # for MacOS
         port = ""
+        baudrate = get_config("motor_controller.serial.baudrate")
+
         match platform.system():
             case "Windows":
-                port = "COM6"
+                port = get_config("motor_controller.serial.win_port")
 
             case _:
-                port = "/dev/ttyUSB0"
+                port = get_config("motor_controller.serial.port")
 
-        self.serial = ArduinoSerial(port, 115200)
+        track_distance = get_config("motor_controller.robot.track_distance")
+        wheel_radius = get_config("motor_controller.robot.wheel_radius")
+
+        self.ik = TrackedRobotIK(track_distance, wheel_radius)
+        self.serial = ArduinoSerial(port, baudrate)
         self.last_update = time.time()
-        self.ik = TrackedRobotIK(0.189, 0.0189)
         self.n = 0
 
         # optimizations
@@ -78,10 +86,17 @@ class MotorControllerClient(AsyncROSClient):
 
 async def main():
     client = MotorControllerClient()
+    odometry_post_delay = get_config("motor_controller.miniros.odometry_post_delay")
+
+    is_running = True
+
     await client.open_port()
 
     def shutdown(sig, frame):
-        asyncio.create_task(client.serial.close()).add_done_callback(lambda _: quit(0))
+        nonlocal is_running
+
+        is_running = False
+        asyncio.create_task(client.serial.close())
 
     async def run():
         await client.wait()
@@ -89,14 +104,16 @@ async def main():
         odometry_topic = await client.topic("odometry", datatypes.Vector)
         speeds_topic = await client.topic("velocity", datatypes.Vector)
 
-        while True:
+        while is_running:
             if client.serial.last_odometry is not None:
                 x, y, t, v, w = client.serial.last_odometry
 
                 await odometry_topic.post(datatypes.Vector(x, y, t))
                 await speeds_topic.post(datatypes.Vector(v, w, 0))
 
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(odometry_post_delay)
+
+        await client.stop()
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)

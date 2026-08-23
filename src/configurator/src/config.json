@@ -1,0 +1,122 @@
+{
+    "robot_radius": 0.25,
+    "obstacle_upper_threshold": 40,
+    "free_lower_threshold": 200,
+    "slam": {
+        "seq_scan_matcher": {
+            "angle_variance_penalty": 0.349,
+            "distance_variance_penalty": 0.5,
+            "coarse_search_angle_offset": 0.349,
+            "coarse_angle_resolution": 0.0349,
+            "fine_search_angle_resolution": 0.0174,
+            "use_response_expansion": true,
+            "range_threshold": 10,
+            "minimum_angle_penalty": 0.9,
+            "search_size": 0.8,
+            "resolution": 0.04,
+            "smear_deviation": 0.09
+        },
+        "loop_scan_matcher": {
+            "angle_variance_penalty": 0.349,
+            "distance_variance_penalty": 0.5,
+            "coarse_search_angle_offset": 0.349,
+            "coarse_angle_resolution": 0.0349,
+            "fine_search_angle_resolution": 0.0174,
+            "use_response_expansion": true,
+            "range_threshold": 10,
+            "minimum_angle_penalty": 0.9,
+            "search_size": 0.5,
+            "resolution": 0.05,
+            "smear_deviation": 0.04
+        },
+        "lidar": {
+            "min_distance": 0.1,
+            "max_distance": 12,
+            "range_threshold": 8
+        },
+        "mapping": {
+            "resolution": 0.05,
+            "range_threshold": 10
+        },
+        "miniros": {
+            "scan_queue_len": 5,
+            "map_post_delay": 0.5,
+            "pose_post_delay": 0.1
+        },
+        "scan_buffer_len": 10,
+        "min_response_coarse": 0.3,
+        "min_response_fine": 0.6
+    },
+    "path_planner": {
+        "world": {
+            "min_x": -5,
+            "min_y": -5,
+            "max_x": 10,
+            "max_y": 10
+        },
+        "pathfinder": {
+            "greedy_shortcut_max_lookahead": 10,
+            "min_distance_to_rebuild": 1.0,
+            "min_distance_between_goals": 0.2,
+            "max_iter": 2000,
+            "step_size_px": 6.0,
+            "goal_tolerance_px": 7.0,
+            "search_radius_factor": 1.0
+        },
+        "miniros": {
+            "rebuild_check_time": 0.1,
+            "max_no_rebuild_time": 20
+        }
+    },
+    "motor_controller": {
+        "serial": {
+            "port": "/dev/ttyUSB0",
+            "win_port": "COM6",
+            "baudrate": 115200
+        },
+        "robot": {
+            "track_distance": 0.189,
+            "wheel_radius": 0.0189
+        },
+        "miniros": {
+            "odometry_post_delay": 0.1
+        }
+    },
+    "motion_controller": {
+        "kinematics": {
+            "max_linear_speed": 0.1,
+            "min_linear_speed": -0.08,
+            "max_angular_speed": 1.5,
+            "max_linear_accel": 1.2,
+            "max_angular_accel": 2
+        },
+        "time": {
+            "delta": 0.2,
+            "prediction": 2
+        },
+        "sampling": {
+            "omega_samples": 31,
+            "v_samples": 11
+        },
+        "weights": {
+            "heading": 0.6,
+            "distance": 0.8,
+            "speed": 0.2,
+            "obstacle": 0.1
+        },
+        "miniros": {
+            "cmdvel_post_delay": 0.8
+        },
+        "goal_tolerance": 0.2,
+        "lookahead_distance": 0.6
+    },
+    "lidar": {
+        "win_port": "COM3",
+        "port": "/dev/ttyUSB1",
+        "baudrate": 115200
+    },
+    "web": {
+        "host": "0.0.0.0",
+        "port": 8080
+    }
+}

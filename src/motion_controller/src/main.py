@@ -1,52 +1,49 @@
+from scipy.ndimage import distance_transform_edt
+import numpy as np
+import math
+
+import asyncio
+
 from miniros.util.datatypes import NumpyArray, Vector
 from miniros_slam.source.datatypes import SLAMOffsetMap
 from miniros.util.decorators import aparsedata
 from miniros import AsyncROSClient
-from scipy.ndimage import distance_transform_edt
-import numpy as np
-import asyncio
-import math
+from miniros_configurator import get_config
+
 
 class MotionControllerConfig:
-    def __init__(
-        self,
-        max_linear_speed: float = 0.1,
-        min_linear_speed: float = -0.08,
-        max_angular_speed: float = 1.5,
-        max_linear_accel: float = 1.2,
-        max_angular_accel: float = 2,
-        dt: float = 0.1,
-        predict_time: float = 1.2,
-        num_v_samples: int = 11,
-        num_w_samples: int = 31,
-        robot_radius: float = 0.2,
-        weight_heading: float = 0.6,
-        weight_dist: float = 0.8,
-        weight_speed: float = 0.2,
-        weight_obstacle: float = 0.1,
-        goal_tolerance: float = 0.2,
-        lookahead_distance: float = 0.6,
-    ):
-        self.max_linear_speed = max_linear_speed
-        self.min_linear_speed = min_linear_speed
-        self.max_angular_speed = max_angular_speed
+    def __init__(self):
+        self.max_linear_speed = get_config(
+            "motion_controller.kinematics.max_linear_speed"
+        )
+        self.min_linear_speed = get_config(
+            "motion_controller.kinematics.min_linear_speed"
+        )
+        self.max_angular_speed = get_config(
+            "motion_controller.kinematics.angular_speed"
+        )
+        self.max_linear_accel = get_config(
+            "motion_controller.kinematics.max_linear_accel"
+        )
+        self.max_angular_accel = get_config(
+            "motion_controller.kinematics.max_angular_accel"
+        )
 
-        self.max_linear_accel = max_linear_accel
-        self.max_angular_accel = max_angular_accel
+        self.dt = get_config("motion_controller.time.delta")
+        self.predict_time = get_config("motion_controller.time.prediction")
 
-        self.dt = dt
-        self.predict_time = predict_time
-        self.num_v_samples = num_v_samples
-        self.num_w_samples = num_w_samples
-        self.robot_radius = robot_radius
+        self.num_v_samples = get_config("motion_controller.sampling.v_samples")
+        self.num_w_samples = get_config("motion_controller.sampling.omega_samples")
 
-        self.weight_heading = weight_heading
-        self.weight_dist = weight_dist
-        self.weight_speed = weight_speed
-        self.weight_obstacle = weight_obstacle
+        self.robot_radius = get_config("robot_radius")
 
-        self.goal_tolerance = goal_tolerance
-        self.lookahead_distance = lookahead_distance
+        self.weight_heading = get_config("motion_controller.weights.heading")
+        self.weight_dist = get_config("motion_controller.weights.distance")
+        self.weight_speed = get_config("motion_controller.weights.speed")
+        self.weight_obstacle = get_config("motion_controller.weights.obstacle")
+
+        self.goal_tolerance = get_config("motion_controller.goal_tolerance")
+        self.lookahead_distance = get_config("motion_controller.lookahead_distance")
 
 
 class MotionController(AsyncROSClient):
@@ -104,6 +101,8 @@ class MotionController(AsyncROSClient):
         # global path from path_planner
         self.global_path = None
         self.target_idx = 0
+
+        self._obstacle_upper_threshold = get_config("obstacle_upper_threshold")
 
     def _world_to_pixel(self, wx: float, wy: float):
         px = math.floor(wx / self.resolution + self.offset_x)
@@ -164,9 +163,9 @@ class MotionController(AsyncROSClient):
 
         if self.global_path is None or len(self.global_path) == 0:
             return (self.robot_x, self.robot_y)
-        
+
         return self.global_path[-1]
-        
+
     def _simulate_trajectory(self, v: float, w: float):
         states = []
         x, y, theta = self.robot_x, self.robot_y, self.robot_heading
@@ -179,7 +178,7 @@ class MotionController(AsyncROSClient):
             states.append((x, y, theta))
 
         return states
-    
+
     def _get_obstacle_distance(self, x: float, y: float):
         if self.obstacle_distance_map is None:
             return 0.0
@@ -195,7 +194,12 @@ class MotionController(AsyncROSClient):
     def _evaluate_trajectory(
         self, states: list[tuple[float, float, float]], v: float, w: float
     ):
-        if self.global_path is None or len(states) <= 0 or self.grid is None or self.obstacle_distance_map is None:
+        if (
+            self.global_path is None
+            or len(states) <= 0
+            or self.grid is None
+            or self.obstacle_distance_map is None
+        ):
             return float("inf")
 
         for x, y, _ in states:
@@ -223,29 +227,31 @@ class MotionController(AsyncROSClient):
 
         # obstacle cost
         safety_margin = self.config.robot_radius
-        influence_distance = self.config.robot_radius + 0.05 # TODO: get rid of magic value
+        influence_distance = (
+            self.config.robot_radius + 0.05
+        )  # TODO: get rid of magic value
 
         obstacle_cost = 0.0
-        
+
         for i, (x, y, _) in enumerate(states):
             if i % 2 == 1:
                 continue
-            
+
             clearance = self._get_obstacle_distance(x, y)
-            
+
             if clearance < safety_margin:
-                obstacle_cost = float('inf')
+                obstacle_cost = float("inf")
                 break
-            
+
             if clearance > influence_distance:
                 continue
 
             normalized = (influence_distance - clearance) / influence_distance
             local_cost = normalized * normalized
             temporal_weight = (i + 1) / len(states)
-            
+
             obstacle_cost += local_cost * temporal_weight
-            
+
         obstacle_cost *= self.config.weight_obstacle
 
         total_cost = heading_cost + dist_cost + speed_cost + obstacle_cost
@@ -268,16 +274,13 @@ class MotionController(AsyncROSClient):
         y = self.robot_y
         v = self.current_v
         w = self.current_w
-        
+
         if grid is None or path is None or len(path) == 0:
             return 0.0, 0.0
 
         # if we are close to the target
         last_x, last_y = path[-1]
-        if (
-            np.hypot(x - last_x, y - last_y)
-            < self.config.goal_tolerance
-        ):
+        if np.hypot(x - last_x, y - last_y) < self.config.goal_tolerance:
             return 0.0, 0.0
 
         if self.target_idx < len(path) - 1:
@@ -288,14 +291,10 @@ class MotionController(AsyncROSClient):
 
             target_x, target_y = path[self.target_idx]
 
-            if (
-                np.hypot(target_x - x, target_y - y)
-                < self.config.goal_tolerance
-            ):
+            if np.hypot(target_x - x, target_y - y) < self.config.goal_tolerance:
                 self.target_idx += 1
                 if self.target_idx >= len(path):
                     self.target_idx = len(path)
-
 
         v_min = max(
             self.config.min_linear_speed,
@@ -347,25 +346,25 @@ class MotionController(AsyncROSClient):
         self.offset_x = map.offset_x
         self.offset_y = map.offset_y
         self.resolution = map.resolution
-        
+
         # apply euclidian distance transform
-        obstacles = self.grid < 40
+        obstacles = self.grid < self._obstacle_upper_threshold
         euc = distance_transform_edt(~obstacles)
-        
+
         if euc is None:
             return
-        
+
         self.obstacle_distance_map = euc
-        self.obstacle_distance_map *= self.resolution # convert px to meters
+        self.obstacle_distance_map *= self.resolution  # convert px to meters
 
     # @aparsedata(Movement)
     # async def on_slam_pose(self, pose: Movement):
     #     self.robot_x = pose.pos.x
     #     self.robot_y = pose.pos.y
     #     self.robot_heading = pose.ang.z
-    
+
     @aparsedata(Vector)
-    async def on_motorcontroller_odometry(self, odom: Vector):        
+    async def on_motorcontroller_odometry(self, odom: Vector):
         self.robot_x, self.robot_y, self.robot_heading = odom.x, odom.y, odom.z
 
     @aparsedata(NumpyArray)
@@ -381,6 +380,7 @@ class MotionController(AsyncROSClient):
 
 async def main():
     client = MotionController(config=MotionControllerConfig())
+    cmdvel_post_delay = get_config("motion_controller.miniros.cmdvel_post_delay")
 
     async def run_path_tracker():
         await client.wait()
@@ -389,11 +389,11 @@ async def main():
         # prev_v, prev_w = 0, 0
 
         while True:
-            await asyncio.sleep(0.1)
-            
+            await asyncio.sleep(cmdvel_post_delay)
+
             v, w = await asyncio.to_thread(client.compute_control)
             await cmdvel_topic.post(Vector(v, -w, 0))
-                
+
     path_track = asyncio.create_task(run_path_tracker())
 
     await asyncio.gather(client.run(), path_track)

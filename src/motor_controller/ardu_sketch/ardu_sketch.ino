@@ -15,7 +15,7 @@
 
 // right motor
 #define R_IN1 12
-#define R_IN2 13
+#define R_IN2 11
 #define R_EN 10
 
 // extended kalman filter for realtime pose estimation and correction
@@ -244,19 +244,29 @@ unsigned long lastMicros = 0;
 // complementary filter dynamic value
 float alpha = 0.0;
 
-float leftMeasures[5] = {0, 0, 0, 0, 0};
+float leftMeasures[5] = { 0, 0, 0, 0, 0 };
 uint8_t leftMeasuresIdx = 0;
-float rightMeasures[5] = {0, 0, 0, 0, 0};
+float rightMeasures[5] = { 0, 0, 0, 0, 0 };
 uint8_t rightMeasuresIdx = 0;
 
 void setup() {
   pinMode(L_IN1, OUTPUT);
+  digitalWrite(L_IN1, LOW);
+
   pinMode(L_IN2, OUTPUT);
+  digitalWrite(L_IN2, LOW);
+
   pinMode(L_EN, OUTPUT);
+  analogWrite(L_EN, 0);
 
   pinMode(R_IN1, OUTPUT);
+  digitalWrite(R_IN1, LOW);
+
   pinMode(R_IN2, OUTPUT);
+  digitalWrite(R_IN2, LOW);
+
   pinMode(R_EN, OUTPUT);
+  analogWrite(R_EN, 0);
 
   Serial.begin(115200);
   Wire.begin();

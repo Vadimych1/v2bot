@@ -8,97 +8,65 @@
     <style>
         html,
         body {
-
             margin: 0;
             padding: 0;
-
             width: 100%;
             height: 100%;
-
             overflow: hidden;
-
             background: #202020;
-
             font-family: Arial, sans-serif;
         }
 
         #map {
-            background-color: white;
-
+            background-color: #7f7f7f;
+            cursor: pointer;
             position: absolute;
-
             left: 0;
             top: 0;
-
             width: 100%;
             height: 100%;
-
-            cursor: crosshair;
         }
 
         #info {
-
             position: absolute;
-
             left: 10px;
             top: 10px;
-
             padding: 12px 16px;
-
-            background: rgba(0, 0, 0, 0.78);
-
-            color: white;
-
-            border-radius: 7px;
-
-            font-family: monospace;
-
-            line-height: 1.6;
-
             min-width: 220px;
+            background: rgba(0, 0, 0, 0.78);
+            color: white;
+            border-radius: 7px;
+            font-family: monospace;
+            line-height: 1.6;
         }
 
         .title {
-
             font-weight: bold;
-
             margin-bottom: 4px;
         }
 
         .separator {
-
             height: 1px;
-
             background: rgba(255, 255, 255, 0.25);
-
             margin: 8px 0;
         }
 
         #controls {
-
             position: absolute;
-
             right: 10px;
             top: 10px;
-
             display: flex;
-
             gap: 5px;
         }
 
         button {
-
             padding: 8px 12px;
-
             border: none;
-
             border-radius: 5px;
-
             cursor: pointer;
         }
 
         button:hover {
-
             background: #ddd;
         }
     </style>
@@ -153,7 +121,6 @@
     </div>
 
     <div id="controls">
-
         <button onclick="centerRobot()">
             Center robot
         </button>
@@ -165,17 +132,11 @@
         <button onclick="clearGoal()">
             Clear goal
         </button>
-
     </div>
 
     <script>
-
-        const canvas =
-            document.getElementById("map");
-
-        const ctx =
-            canvas.getContext("2d");
-
+        const canvas = document.getElementById("map");
+        const ctx = canvas.getContext("2d");
 
         let mapData = null;
         let mapImage = null;
@@ -198,10 +159,8 @@
          */
 
         let camera = {
-
             x: 0,
             y: 0,
-
             zoom: 50
         };
 
@@ -215,42 +174,23 @@
         let lastMouseX = 0;
         let lastMouseY = 0;
 
-
-        /* ============================================================
-         * RESIZE
-         * ========================================================= */
-
         function resizeCanvas() {
-
-            canvas.width =
-                window.innerWidth;
-
-            canvas.height =
-                window.innerHeight;
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
 
             draw();
         }
-
-
         window.addEventListener(
             "resize",
             resizeCanvas
         );
 
-
-        /* ============================================================
-         * WORLD → SCREEN
-         * ========================================================= */
-
         function worldToScreen(x, y) {
-
             return {
-
                 x:
                     canvas.width / 2
                     + (x - camera.x)
                     * camera.zoom,
-
                 y:
                     canvas.height / 2
                     - (y - camera.y)
@@ -258,20 +198,12 @@
             };
         }
 
-
-        /* ============================================================
-         * SCREEN → WORLD
-         * ========================================================= */
-
         function screenToWorld(x, y) {
-
             return {
-
                 x:
                     camera.x
                     + (x - canvas.width / 2)
                     / camera.zoom,
-
                 y:
                     camera.y
                     - (y - canvas.height / 2)
@@ -279,51 +211,29 @@
             };
         }
 
-
-        /* ============================================================
-         * MAP PIXEL → WORLD
-         * ========================================================= */
-
         function mapPixelToWorld(px, py) {
-
             return {
-
                 x:
                     (px - mapData.offset_x)
                     * mapData.resolution,
-
                 y:
                     (py - mapData.offset_y)
                     * mapData.resolution
             };
         }
 
-
-        /* ============================================================
-         * WORLD → MAP PIXEL
-         * ============================================================ */
-
         function worldToMapPixel(x, y) {
-
             return {
-
                 x:
                     x / mapData.resolution
                     + mapData.offset_x,
-
                 y:
                     y / mapData.resolution
                     + mapData.offset_y
             };
         }
 
-
-        /* ============================================================
-         * DRAW
-         * ============================================================ */
-
         function draw() {
-
             ctx.clearRect(
                 0,
                 0,
@@ -335,22 +245,14 @@
                 return;
 
             drawMap();
-
             drawGlobalPath();
-
             drawGoal();
-
+            drawTrajectory();
             drawVelocityVector();
-
             drawAngularVelocity();
-
             drawRobot();
         }
 
-
-        /* ============================================================
-         * DRAW MAP
-         * ============================================================ */
 
         function drawMap() {
 
@@ -404,17 +306,17 @@
              * Therefore flip the map vertically.
              */
 
-            ctx.save();
+            // ctx.save();
 
-            ctx.translate(
-                x,
-                y + height
-            );
+            // ctx.translate(
+            //     x,
+            //     y + height
+            // );
 
-            ctx.scale(
-                1,
-                -1
-            );
+            // ctx.scale(
+            //     1,
+            //     -1
+            // );
 
             ctx.drawImage(
                 mapImage,
@@ -424,13 +326,8 @@
                 height
             );
 
-            ctx.restore();
+            // ctx.restore();
         }
-
-
-        /* ============================================================
-         * DRAW GLOBAL PATH
-         * ============================================================ */
 
         function drawGlobalPath() {
 
@@ -484,11 +381,6 @@
 
             ctx.stroke();
         }
-
-
-        /* ============================================================
-         * DRAW ROBOT
-         * ============================================================ */
 
         function drawRobot() {
 
@@ -604,11 +496,6 @@
             ctx.restore();
         }
 
-
-        /* ============================================================
-         * DRAW GOAL
-         * ============================================================ */
-
         function drawGoal() {
 
             if (!goal)
@@ -657,10 +544,8 @@
         }
 
         function drawAngularVelocity() {
-
             if (!robot || !cmdvel)
                 return;
-
 
             if (
                 Math.abs(cmdvel.angular) < 0.001
@@ -668,13 +553,11 @@
                 return;
             }
 
-
             const p =
                 worldToScreen(
                     robot.x,
                     robot.y
                 );
-
 
             const radius =
                 0.3 * camera.zoom;
@@ -853,66 +736,66 @@
                 6
             );
 
-
             ctx.stroke();
-
-
             ctx.restore();
         }
 
-        /* ============================================================
-         * CLICK → GOAL
-         * ============================================================ */
+        function drawTrajectory(dt = 0.2, time = 2) {
+            if (!robot || !cmdvel)
+                return;
+
+            let cx = robot.x, cy = robot.y, ctheta = robot.heading;
+            let v = cmdvel.linear, w = cmdvel.angular;
+            const start = worldToScreen(cx, cy);
+
+            ctx.strokeStyle = "#DD661A"
+            ctx.lineWidth = 3;
+
+            ctx.beginPath()
+            ctx.moveTo(start.x, start.y)
+
+            for (let i = 0; i < Math.ceil(time / dt); i++) {
+                let s = v * dt;
+
+                cx += s * Math.cos(ctheta);
+                cy += s * Math.sin(ctheta);
+                ctheta += w * dt;
+
+                const new_point = worldToScreen(cx, cy);
+                ctx.lineTo(new_point.x, new_point.y);
+            }
+
+            ctx.stroke();
+        }
 
         canvas.addEventListener(
             "click",
             event => {
-
-                if (!mapData)
-                    return;
-
+                if (!mapData) return;
 
                 /*
                  * Ignore click if it was actually
                  * the end of a drag operation.
                  */
 
-                if (dragging)
-                    return;
+                if (dragging) return;
 
+                const rect = canvas.getBoundingClientRect();
 
-                const rect =
-                    canvas.getBoundingClientRect();
+                const sx = event.clientX - rect.left;
+                const sy = event.clientY - rect.top
 
-
-                const sx =
-                    event.clientX -
-                    rect.left;
-
-                const sy =
-                    event.clientY -
-                    rect.top;
-
-
-                const world =
-                    screenToWorld(
-                        sx,
-                        sy
-                    );
-
+                const world = screenToWorld(sx, sy);
 
                 goal = {
-
                     x: world.x,
                     y: world.y
                 };
-
 
                 sendGoal(
                     world.x,
                     world.y
                 );
-
 
                 draw();
             }
@@ -1214,7 +1097,6 @@
 
 
         socket.onmessage = event => {
-
             const message =
                 JSON.parse(
                     event.data
