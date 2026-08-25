@@ -2,7 +2,7 @@
     "robot_radius": 0.25,
     "obstacle_upper_threshold": 40,
     "free_lower_threshold": 200,
-    "slam": {
+    "yag-slam": {
         "seq_scan_matcher": {
             "angle_variance_penalty": 0.8,
             "distance_variance_penalty": 0.8,
@@ -46,6 +46,18 @@
         "scan_buffer_len": 10,
         "min_response_coarse": 0.3,
         "min_response_fine": 0.4
+    },
+    "rtab-slam": {
+        "lidar": {
+            "min_distance": 0.05,
+            "max_distance": 8
+        },
+        "miniros": {
+            "scan_queue_len": 5,
+            "map_post_delay": 0.5,
+            "pose_post_delay": 0.1
+        },
+        "resolution": 0.05
     },
     "path_planner": {
         "world": {

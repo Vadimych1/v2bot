@@ -1,0 +1,8 @@
+<?xml version="1.0" ?>
+<package name="slam" version="1.0.0">
+	<entrypoint>main</entrypoint>
+	<maintainer>todo</maintainer>
+	<description>MiniROS package</description>
+	<authors/>
+	<requirements/>
+</package>
