@@ -306,17 +306,17 @@
              * Therefore flip the map vertically.
              */
 
-            // ctx.save();
+            ctx.save();
 
-            // ctx.translate(
-            //     x,
-            //     y + height
-            // );
+            ctx.translate(
+                x,
+                y + height
+            );
 
-            // ctx.scale(
-            //     1,
-            //     -1
-            // );
+            ctx.scale(
+                1,
+                -1
+            );
 
             ctx.drawImage(
                 mapImage,
@@ -326,7 +326,7 @@
                 height
             );
 
-            // ctx.restore();
+            ctx.restore();
         }
 
         function drawGlobalPath() {

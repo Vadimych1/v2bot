@@ -1,3 +1,3 @@
 
 # Add your importables here
-from motor_controller.src.source.datatypes import *
+from miniros_motor_controller.source.datatypes import *

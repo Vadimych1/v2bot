@@ -377,7 +377,7 @@ async def main():
     max_no_rebuild_time = get_config("path_planner.miniros.max_no_rebuild_time")
 
     min_distance_from_start_to_goal = get_config(
-        "path_planner.pathfinder.min_distance_from_start_to_goal"
+        "path_planner.pathfinder.min_distance_to_rebuild"
     )
     min_distance_between_goals = get_config(
         "path_planner.pathfinder.min_distance_between_goals"

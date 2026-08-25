@@ -20,7 +20,7 @@ class MotionControllerConfig:
             "motion_controller.kinematics.min_linear_speed"
         )
         self.max_angular_speed = get_config(
-            "motion_controller.kinematics.angular_speed"
+            "motion_controller.kinematics.max_angular_speed"
         )
         self.max_linear_accel = get_config(
             "motion_controller.kinematics.max_linear_accel"
