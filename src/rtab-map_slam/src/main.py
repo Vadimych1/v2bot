@@ -36,9 +36,8 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
         except Empty:
             continue
 
-        pose = scan.movement
+        pose = scan.pos
         ranges, angles = scan.distances, scan.angles
-        timestamp = scan.timestamp
 
         # py::arg("distances"),
         # py::arg("angles"),
@@ -79,7 +78,7 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
             mmap_data = SLAMOffsetMap.encode(mmap_data)
 
         map_counter += 1
-        output_queue.put((Movement.encode(movement_msg), mmap_data))
+        output_queue.put((datatypes.TimedMovement3DoF.encode(movement_msg), mmap_data))
 
 
 class SLAMClient(AsyncROSClient):

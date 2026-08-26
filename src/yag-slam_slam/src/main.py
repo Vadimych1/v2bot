@@ -54,7 +54,12 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
     lidar_max_distance = get_config("yag-slam.lidar.max_distance")
     lidar_range_threshold = get_config("yag-slam.lidar.range_threshold")
 
+    nq = 0
+    nq_start_time = time.time()
+
     while True:
+        nq += 1
+        
         try:
             scan = input_queue.get(timeout=1)
 
@@ -96,6 +101,9 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
 
         movement_msg = pose2movement(res.best_pose, scan.timestamp)
         mmap_data = None
+        
+        if nq % 30 == 0:
+            print(f"Running at {nq / (time.time() - nq_start_time)}Hz")
 
         if map_counter % 3 == 0:
             grid = mapper.make_occupancy_grid(
@@ -189,7 +197,7 @@ async def main():
 
     async def post_pos_job():
         await client.wait()
-
+    
         # miniros allows you to send and receive data with any type you want
         # here we are sending pre-encoded Movement bytes but on the other end
         # we will parse it as Movement using @aparsedata

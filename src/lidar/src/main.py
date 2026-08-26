@@ -5,10 +5,49 @@ import time
 import platform
 import asyncio
 import signal
+import multiprocessing as mp
+from queue import Empty
 
-from miniros import AsyncROSClient, datatypes, threaded, aparsedata
+from miniros import AsyncROSClient, datatypes, aparsedata
 from miniros_configurator import get_config
 
+
+def scan_worker(port: str, baudrate: int, running, queue: mp.Queue):
+    lidar = pyrplidarsdk.RplidarDriver(
+        port=port,
+        baudrate=baudrate,
+    )
+    
+    if not lidar.connect():
+        print("[] failed to connect", flush=True)
+        exit(1)
+    
+    lidar.start_scan()
+
+    while running.is_set():
+        dat = lidar.get_scan_data()
+        
+        if dat is not None:
+            angles, distances, quality = dat
+            timestamp = time.time()
+            
+            try:
+                if queue.full():
+                    try:
+                        queue.get_nowait()
+                    except Empty:
+                        pass
+                
+                queue.put_nowait((angles, distances, timestamp))
+            
+            except Exception:
+                pass
+        
+        else:
+            print("[] null scan", flush=True)
+    
+    lidar.stop_scan()
+    lidar.disconnect()
 
 class FixedSizeList(list):
     def __init__(self, maxlen, iterable=()):
@@ -34,45 +73,19 @@ class FixedSizeList(list):
             self.pop(0)
 
 
-class FixedSizeQueue:
-    def __init__(self, maxsize=10) -> None:
-        self._queue = asyncio.Queue(maxsize)
-
-    async def get(self):
-        return await self._queue.get()
-
-    async def put(self, data):
-        if self._queue.full():
-            self._queue.get_nowait()
-
-        await self.put(data)
-
-    def put_nowait(self, data):
-        if self._queue.full():
-            self._queue.get_nowait()
-
-        self._queue.put_nowait(data)
-
-
 class LidarClient(AsyncROSClient):
     def __init__(self, ip="localhost", port=3000):
         super().__init__("lidar", ip, port)
 
         win_port = get_config("lidar.win_port")
         ldr_port = get_config("lidar.port")
-        baudrate = get_config("lidar.baudrate")
+        self.port = win_port if platform.system() == "Windows" else ldr_port
+        self.baudrate = get_config("lidar.baudrate")
 
-        self.lidar = pyrplidarsdk.RplidarDriver(
-            port=win_port if platform.system() == "Windows" else ldr_port,
-            baudrate=baudrate,
-        )
-
-        if not self.lidar.connect():
-            print("[] failed to connect")
-            exit(1)
+        self.lidar_proc = mp.Process(target=scan_worker)
 
         self.last_ping_time = time.time()
-        self.lidar_queue = FixedSizeQueue(10)
+        self.lidar_queue = mp.Queue(10)
 
         self._odometry_event = asyncio.Event()
         self._odometry = FixedSizeList(
@@ -105,49 +118,46 @@ class LidarClient(AsyncROSClient):
             ],
         )
 
-        self.running = asyncio.Event()
+        self.running = mp.Event()
+
+    def scans_job(self):
+        if self.lidar_proc is not None and self.lidar_proc.is_alive():
+            return
+        
+        self.running.set()
+        self.lidar_proc = mp.Process(target=scan_worker, args=(self.port, self.baudrate, self.running, self.lidar_queue))
+        self.lidar_proc.start()
+        
+    async def get_scan_async(self):
+        loop = asyncio.get_running_loop()
+        
+        try:
+            data = await loop.run_in_executor(None, self.lidar_queue.get, True, 3)
+            return data
+        except Empty:
+            return None
 
     async def on_ping(self, _, node):
         self.last_ping_time = time.time()
-
-    def iter_scans(self):
-        self.running.set()
-
-        while self.running.is_set():
-            dat = self.lidar.get_scan_data()
-
-            if dat is not None:
-                yield (dat, time.time())
-
-            else:
-                print("[] null")
-
-    @threaded()
-    def scans_job(self):
-        self.lidar.start_scan()
-
-        for (angles, distances, quality), t in self.iter_scans():
-            self.lidar_queue.put_nowait((angles, distances, t))
 
     @aparsedata(datatypes.TimedMovement3DoF)
     async def on_motorcontroller_odometry(self, pos):
         self._odometry.append(pos)
         self._odometry_event.set()
-
+        
     async def wait_for_odometry_ts(self, timestamp: float, max_tries: int = 2):
         """
         Waits for two odometry values that are `before` and `after` timestamp
         to interpolate them after
         """
+
         for i, odom in enumerate(self._odometry):
             if odom.timestamp >= timestamp:
                 if i > 0:
                     prev_odom = self._odometry[i - 1]
-                    print("OK, got from stack")
                     return self._interpolate(odom, prev_odom, timestamp)
 
                 else:
-                    print("too late, got last")
                     return self._odometry[0]
 
         self._odometry_event.clear()
@@ -157,12 +167,10 @@ class LidarClient(AsyncROSClient):
             self._odometry_event.clear()
 
             if self._odometry[-1].timestamp >= timestamp:
-                print("OK, got from new stack")
                 return self._interpolate(
                     self._odometry[-1], self._odometry[-2], timestamp
                 )
 
-        print("too early, got latest")
         return self._odometry[-1]
 
     def _normalize_angle(self, angle):
@@ -178,7 +186,7 @@ class LidarClient(AsyncROSClient):
         mov = odom.movement
         prev_mov = prev_odom.movement
 
-        alpha = (timestamp - prev_mov.timestamp) / (mov.timestamp - prev_mov.timestamp)
+        alpha = (timestamp - prev_odom.timestamp) / (odom.timestamp - prev_odom.timestamp)
         x = prev_mov.x + alpha * (mov.x - prev_mov.x)
         y = prev_mov.y + alpha * (mov.y - prev_mov.y)
         theta = prev_mov.theta + alpha * (mov.theta - prev_mov.theta)
@@ -194,15 +202,14 @@ class LidarClient(AsyncROSClient):
 
 
 async def main():
+    nq_start_time = time.time()
+    nq = 0
+
     client = LidarClient()
-    t = client.scans_job()
+    client.scans_job()
 
     def shutdown(sig, frame):
         client.running.clear()
-        client.lidar.stop_scan()
-        client.lidar.disconnect()
-
-        t.join()
 
     async def run():
         await client.wait()
@@ -210,13 +217,15 @@ async def main():
         ldr_topic = await client.topic("lidar", datatypes.Lidar2D)
 
         while client.running.is_set():
-            lidar = await client.lidar_queue.get()
+            nq += 1
+            
+            lidar = await client.get_scan_async()
 
             if lidar is None:
                 continue
 
             angles, distances, ts = lidar
-            pos = await client.wait_for_odometry_ts(ts, max_tries=2)
+            pos = await client.wait_for_odometry_ts(ts, max_tries=3)
 
             await ldr_topic.post(
                 datatypes.Lidar2D(
@@ -226,6 +235,9 @@ async def main():
                     timestamp=ts,
                 )
             )
+            
+            if nq % 30 == 0:
+                print(f"Running at {nq / (time.time() - nq_start_time)}Hz")
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)

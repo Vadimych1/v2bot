@@ -9,7 +9,7 @@
 	</authors>
 
 	<requirements>
-		<pip>pyrplidarsdk @ file://{root}/../pyrplidarsdk</pip>
+		<!-- <pip>pyrplidarsdk @ file://{root}/../pyrplidarsdk</pip> -->
 		<miniros>miniros&gt;=1.1.0</miniros>
 	</requirements>
 </package>

@@ -27,6 +27,7 @@ class GoalManagerClient(AsyncROSClient):
         self.latest_pose = None
         self.latest_path = None
         self.latest_cmdvel = None
+        self.latest_slam_pose = None
 
         self.web_clients: set[WebSocket] = set()
 
@@ -43,6 +44,19 @@ class GoalManagerClient(AsyncROSClient):
     async def on_slam_map(self, data):
         self.latest_map = data
         await self.broadcast_map(data)
+        
+    @aparsedata(datatypes.TimedMovement3DoF)
+    async def on_slam_pose(self, data):
+        self.latest_slam_pose = {
+            "x": data.movement.x,
+            "y": data.movement.y,
+            "theta": data.movement.theta,
+        }
+        
+        await self.broadcast({
+            "type": "slam_pose",
+            "pose": self.latest_slam_pose
+        })
 
     @aparsedata(datatypes.TimedMovement3DoF)
     async def on_motorcontroller_odometry(self, data):
@@ -148,6 +162,11 @@ async def websocket_endpoint(websocket: WebSocket):
         if client.latest_cmdvel is not None:
             await websocket.send_json(
                 {"type": "cmdvel", "cmdvel": client.latest_cmdvel}
+            )
+            
+        if client.latest_slam_pose is not None:
+            await websocket.send_json(
+                {"type": "slam_pose", "pose": client.latest_slam_pose}
             )
 
         while True:
