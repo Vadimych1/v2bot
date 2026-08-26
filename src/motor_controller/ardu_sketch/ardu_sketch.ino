@@ -333,7 +333,7 @@ void loop() {
     }
 
     long leftTicks = leftEnc.read();
-    long rightTicks = rightEnc.read();
+    long rightTicks = -rightEnc.read();
 
     long deltaLeft = leftTicks - lastLeftTicks;
     long deltaRight = rightTicks - lastRightTicks;
@@ -505,5 +505,5 @@ void motorControl(float dt, float dLeft, float dRight) {
   rightPrevError = rightErr;
 
   setMotor(L_IN1, L_IN2, L_EN, leftPwm);
-  setMotor(R_IN1, R_IN2, R_EN, -rightPwm);
+  setMotor(R_IN1, R_IN2, R_EN, rightPwm);
 }

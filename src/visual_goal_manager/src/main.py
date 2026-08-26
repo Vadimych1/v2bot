@@ -44,12 +44,12 @@ class GoalManagerClient(AsyncROSClient):
         self.latest_map = data
         await self.broadcast_map(data)
 
-    @aparsedata(datatypes.Vector)
-    async def on_motorcontroller_odometry(self, data: datatypes.Vector):
+    @aparsedata(datatypes.TimedMovement3DoF)
+    async def on_motorcontroller_odometry(self, data):
         self.latest_pose = {
-            "x": float(data.x),
-            "y": float(data.y),
-            "heading": float(data.z),
+            "x": float(data.movement.x),
+            "y": float(data.movement.y),
+            "heading": float(data.movement.theta),
         }
 
         await self.broadcast({"type": "pose", "pose": self.latest_pose})

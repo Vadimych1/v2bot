@@ -1,13 +1,13 @@
 from scipy.ndimage import distance_transform_edt
 import numpy as np
 import math
+import time
 
 import asyncio
-
-from miniros.util.datatypes import NumpyArray, Vector
+from miniros import AsyncROSClient
+from miniros.util.datatypes import NumpyArray, Vector, TimedMovement3DoF
 from miniros_slam.source.datatypes import SLAMOffsetMap
 from miniros.util.decorators import aparsedata
-from miniros import AsyncROSClient
 from miniros_configurator import get_config
 
 
@@ -103,6 +103,9 @@ class MotionController(AsyncROSClient):
         self.target_idx = 0
 
         self._obstacle_upper_threshold = get_config("obstacle_upper_threshold")
+
+        self._last_map_ts = -1
+        self._last_odom_ts = -1
 
     def _world_to_pixel(self, wx: float, wy: float):
         px = math.floor(wx / self.resolution + self.offset_x)
@@ -357,25 +360,29 @@ class MotionController(AsyncROSClient):
         self.obstacle_distance_map = euc
         self.obstacle_distance_map *= self.resolution  # convert px to meters
 
+        self._last_map_ts = time.time()
+
     # @aparsedata(Movement)
     # async def on_slam_pose(self, pose: Movement):
     #     self.robot_x = pose.pos.x
     #     self.robot_y = pose.pos.y
     #     self.robot_heading = pose.ang.z
 
-    @aparsedata(Vector)
-    async def on_motorcontroller_odometry(self, odom: Vector):
-        self.robot_x, self.robot_y, self.robot_heading = odom.x, odom.y, odom.z
-
-    @aparsedata(NumpyArray)
-    async def on_pathplanner_globalpath(self, path: np.ndarray):
-        self.global_path = path
-        self.target_idx = 0
+    @aparsedata(TimedMovement3DoF)
+    async def on_motorcontroller_odometry(self, odom):
+        mov = odom.movement
+        self.robot_x, self.robot_y, self.robot_heading = mov.x, mov.y, mov.theta
+        self._last_odom_ts = odom.timestamp
 
     @aparsedata(Vector)
     async def on_motorcontroller_velocity(self, velocity: Vector):
         self.current_v = velocity.x
         self.current_w = velocity.y
+
+    @aparsedata(NumpyArray)
+    async def on_pathplanner_globalpath(self, path: np.ndarray):
+        self.global_path = path
+        self.target_idx = 0
 
 
 async def main():
@@ -386,10 +393,18 @@ async def main():
         await client.wait()
 
         cmdvel_topic = await client.topic("cmdvel", Vector)
-        # prev_v, prev_w = 0, 0
 
         while True:
             await asyncio.sleep(cmdvel_post_delay)
+            ts = time.time()
+
+            if ts - client._last_odom_ts >= get_config(
+                "motion_controller.odometry_max_age"
+            ) or ts - client._last_map_ts >= get_config(
+                "motion_controller.map_max_age"
+            ):
+                await cmdvel_topic.post(Vector(0, 0, 0))
+                continue
 
             v, w = await asyncio.to_thread(client.compute_control)
             await cmdvel_topic.post(Vector(v, w, 0))

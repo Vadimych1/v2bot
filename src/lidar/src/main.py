@@ -1,4 +1,5 @@
 import pyrplidarsdk
+import math
 import time
 
 import platform
@@ -7,6 +8,50 @@ import signal
 
 from miniros import AsyncROSClient, datatypes, threaded, aparsedata
 from miniros_configurator import get_config
+
+
+class FixedSizeList(list):
+    def __init__(self, maxlen, iterable=()):
+        self.maxlen = maxlen
+        super().__init__(iterable)
+        # Если переданный итерируемый объект длиннее maxlen, обрезаем начало
+        if len(self) > maxlen:
+            del self[: len(self) - maxlen]
+
+    def append(self, item):
+        super().append(item)
+        if len(self) > self.maxlen:
+            self.pop(0)  # удаляем самый старый элемент
+
+    def insert(self, index, item):
+        super().insert(index, item)
+        if len(self) > self.maxlen:
+            self.pop(0)
+
+    def extend(self, iterable):
+        super().extend(iterable)
+        while len(self) > self.maxlen:
+            self.pop(0)
+
+
+class FixedSizeQueue:
+    def __init__(self, maxsize=10) -> None:
+        self._queue = asyncio.Queue(maxsize)
+
+    async def get(self):
+        return await self._queue.get()
+
+    async def put(self, data):
+        if self._queue.full():
+            self._queue.get_nowait()
+
+        await self.put(data)
+
+    def put_nowait(self, data):
+        if self._queue.full():
+            self._queue.get_nowait()
+
+        self._queue.put_nowait(data)
 
 
 class LidarClient(AsyncROSClient):
@@ -27,14 +72,40 @@ class LidarClient(AsyncROSClient):
             exit(1)
 
         self.last_ping_time = time.time()
+        self.lidar_queue = FixedSizeQueue(10)
 
-        self.last_lidar = None
-        self.new_lidar_event = asyncio.Event()
+        self._odometry_event = asyncio.Event()
+        self._odometry = FixedSizeList(
+            10,
+            [
+                datatypes.TimedMovement3DoF(
+                    timestamp=time.time(),
+                    movement=datatypes.Movement3DoF(
+                        x=0,
+                        y=0,
+                        theta=0,
+                    ),
+                ),
+                datatypes.TimedMovement3DoF(
+                    timestamp=time.time() - 1,
+                    movement=datatypes.Movement3DoF(
+                        x=0,
+                        y=0,
+                        theta=0,
+                    ),
+                ),
+                datatypes.TimedMovement3DoF(
+                    timestamp=time.time() - 2,
+                    movement=datatypes.Movement3DoF(
+                        x=0,
+                        y=0,
+                        theta=0,
+                    ),
+                ),
+            ],
+        )
 
         self.running = asyncio.Event()
-
-        self._loop = asyncio.get_event_loop()
-        self.current_position = datatypes.Vector(0, 0, 0)
 
     async def on_ping(self, _, node):
         self.last_ping_time = time.time()
@@ -46,7 +117,7 @@ class LidarClient(AsyncROSClient):
             dat = self.lidar.get_scan_data()
 
             if dat is not None:
-                yield dat
+                yield (dat, time.time())
 
             else:
                 print("[] null")
@@ -55,13 +126,71 @@ class LidarClient(AsyncROSClient):
     def scans_job(self):
         self.lidar.start_scan()
 
-        for angles, distances, quality in self.iter_scans():
-            self.last_lidar = (angles, distances, self.current_position.copy())
-            self.new_lidar_event.set()
+        for (angles, distances, quality), t in self.iter_scans():
+            self.lidar_queue.put_nowait((angles, distances, t))
 
-    @aparsedata(datatypes.Vector)
-    async def on_motorcontroller_odometry(self, pos: datatypes.Vector):
-        self.current_position = pos
+    @aparsedata(datatypes.TimedMovement3DoF)
+    async def on_motorcontroller_odometry(self, pos):
+        self._odometry.append(pos)
+        self._odometry_event.set()
+
+    async def wait_for_odometry_ts(self, timestamp: float, max_tries: int = 2):
+        """
+        Waits for two odometry values that are `before` and `after` timestamp
+        to interpolate them after
+        """
+        for i, odom in enumerate(self._odometry):
+            if odom.timestamp >= timestamp:
+                if i > 0:
+                    prev_odom = self._odometry[i - 1]
+                    print("OK, got from stack")
+                    return self._interpolate(odom, prev_odom, timestamp)
+
+                else:
+                    print("too late, got last")
+                    return self._odometry[0]
+
+        self._odometry_event.clear()
+
+        for _ in range(max_tries):
+            await self._odometry_event.wait()
+            self._odometry_event.clear()
+
+            if self._odometry[-1].timestamp >= timestamp:
+                print("OK, got from new stack")
+                return self._interpolate(
+                    self._odometry[-1], self._odometry[-2], timestamp
+                )
+
+        print("too early, got latest")
+        return self._odometry[-1]
+
+    def _normalize_angle(self, angle):
+        while angle > math.pi:
+            angle -= 2 * math.pi
+
+        while angle < -math.pi:
+            angle += 2 * math.pi
+
+        return angle
+
+    def _interpolate(self, odom, prev_odom, timestamp):
+        mov = odom.movement
+        prev_mov = prev_odom.movement
+
+        alpha = (timestamp - prev_mov.timestamp) / (mov.timestamp - prev_mov.timestamp)
+        x = prev_mov.x + alpha * (mov.x - prev_mov.x)
+        y = prev_mov.y + alpha * (mov.y - prev_mov.y)
+        theta = prev_mov.theta + alpha * (mov.theta - prev_mov.theta)
+
+        return datatypes.TimedMovement3DoF(
+            timestamp=timestamp,
+            movement=datatypes.Movement3DoF(
+                x=x,
+                y=y,
+                theta=self._normalize_angle(theta),
+            ),
+        )
 
 
 async def main():
@@ -78,19 +207,24 @@ async def main():
     async def run():
         await client.wait()
 
-        ldr_topic = await client.topic("lidar", datatypes.LidarDatatype)
+        ldr_topic = await client.topic("lidar", datatypes.Lidar2D)
 
-        while True:
-            await client.new_lidar_event.wait()
-            client.new_lidar_event.clear()
+        while client.running.is_set():
+            lidar = await client.lidar_queue.get()
 
-            if client.last_lidar is None:
-                return
+            if lidar is None:
+                continue
 
-            angles, distances, pos = client.last_lidar
+            angles, distances, ts = lidar
+            pos = await client.wait_for_odometry_ts(ts, max_tries=2)
 
             await ldr_topic.post(
-                datatypes.LidarDatatype(distances=distances, angles=angles, pos=pos)
+                datatypes.Lidar2D(
+                    distances=distances,
+                    angles=angles,
+                    pos=pos.movement,
+                    timestamp=ts,
+                )
             )
 
     signal.signal(signal.SIGINT, shutdown)
