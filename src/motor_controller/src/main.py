@@ -68,17 +68,21 @@ class MotorControllerClient(AsyncROSClient):
 
         l, r = self.ik.calculate_wheel_speeds(v, w)
 
-        await self.serial.set_speeds(l, r)
+        await self.serial.set_speeds(l, -r)
 
+    # TODO: FIX POSE MATCHING AND UNCOMMENT
     @aparsedata(datatypes.Movement)
     async def on_slam_pose(self, data: datatypes.Movement):
-        self.n += 1
+        # self.n += 1
+        print(data.pos.x, data.pos.y, data.ang.z)
 
-        if self.n % 3 == 0:
-            x, y = data.pos.x, data.pos.y
-            theta = data.ang.z
+    #     if self.n % (10 * 5) == 0: # ~every 5 seconds
+    #         print("pos reset")
+            
+    #         x, y = data.pos.x, data.pos.y
+    #         theta = data.ang.z
 
-            await self.serial.reset_position(x, y, theta)
+    #         await self.serial.reset_position(x, y, theta)
 
     async def open_port(self):
         await self.serial.serial.open()

@@ -2,7 +2,7 @@
 <package name="slam" version="1.0.0">
 	<entrypoint>main</entrypoint>
 	<maintainer>todo</maintainer>
-	<description>MiniROS package</description>
+	<description>Check README.md for installing instructions</description>
 	<authors/>
 	<requirements/>
 </package>

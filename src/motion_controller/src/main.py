@@ -392,7 +392,7 @@ async def main():
             await asyncio.sleep(cmdvel_post_delay)
 
             v, w = await asyncio.to_thread(client.compute_control)
-            await cmdvel_topic.post(Vector(v, -w, 0))
+            await cmdvel_topic.post(Vector(v, w, 0))
 
     path_track = asyncio.create_task(run_path_tracker())
 

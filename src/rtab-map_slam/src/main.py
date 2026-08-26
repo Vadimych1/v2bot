@@ -12,7 +12,7 @@ from miniros.util.datatypes import Movement, Vector
 
 
 def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
-    map_resolution = get_config("rtab-slam.mapping.resolution")
+    map_resolution = get_config("rtab-slam.resolution")
 
     # float lidarMinRange, float lidarMaxRange, float resolution
     mapper = RtabmapSLAM(
@@ -22,7 +22,6 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
     )
 
     map_counter = 0
-    map_range_threshold = get_config("slam.mapping.range_threshold")
 
     while True:
         try:
@@ -39,6 +38,7 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
 
         pose: Vector = scan.pos
         ranges, angles = scan.distances, scan.angles
+        timestamp = scan.timestamp
 
         # py::arg("distances"),
         # py::arg("angles"),
@@ -49,13 +49,13 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
         new_x, new_y, new_theta = mapper.process(
             ranges,
             angles,
-            pose.x,
-            pose.y,
-            pose.z,
-            time.time(),  # TODO: replace with LiDAR actual timestamp
+            pose.x,  # x
+            pose.y,  # y
+            -pose.z, # theta
+            timestamp,
         )
 
-        movement_msg = Movement(Vector(new_x, new_y, 0), Vector(0, 0, new_theta))
+        movement_msg = Movement(Vector(new_x, new_y, 0), Vector(0, 0, -new_theta))
         mmap_data = None
 
         if map_counter % 3 == 0:
@@ -142,8 +142,8 @@ async def main():
     client = SLAMClient()
     client.start_slam_process()
 
-    map_post_delay = get_config("slam.miniros.map_post_delay")
-    pose_post_delay = get_config("slam.miniros.pose_post_delay")
+    map_post_delay = get_config("rtab-slam.miniros.map_post_delay")
+    pose_post_delay = get_config("rtab-slam.miniros.pose_post_delay")
 
     async def post_pos_job():
         await client.wait()
