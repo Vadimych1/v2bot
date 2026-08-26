@@ -120,7 +120,9 @@
             "cmdvel_post_delay": 0.8
         },
         "goal_tolerance": 0.2,
-        "lookahead_distance": 0.6
+        "lookahead_distance": 0.6,
+        "odometry_max_age": 0.2,
+        "map_max_age": 1
     },
     "lidar": {
         "win_port": "COM3",

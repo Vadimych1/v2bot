@@ -70,14 +70,13 @@ class MotorControllerClient(AsyncROSClient):
 
         await self.serial.set_speeds(l, r)
 
-    @aparsedata(datatypes.Movement)
-    async def on_slam_pose(self, data: datatypes.Movement):
+    @aparsedata(datatypes.TimedMovement3DoF)
+    async def on_slam_pose(self, data):
         self.n += 1
 
+        mov = data.movement
         if self.n % 3 == 0:
-            x, y = data.pos.x, data.pos.y
-            theta = data.ang.z
-
+            x, y, theta = mov.x, mov.y, mov.theta
             await self.serial.reset_position(x, y, theta)
 
     async def open_port(self):
@@ -101,14 +100,23 @@ async def main():
     async def run():
         await client.wait()
 
-        odometry_topic = await client.topic("odometry", datatypes.Vector)
+        odometry_topic = await client.topic("odometry", datatypes.TimedMovement3DoF)
         speeds_topic = await client.topic("velocity", datatypes.Vector)
 
         while is_running:
             if client.serial.last_odometry is not None:
                 x, y, t, v, w = client.serial.last_odometry
 
-                await odometry_topic.post(datatypes.Vector(x, y, t))
+                await odometry_topic.post(
+                    datatypes.TimedMovement3DoF(
+                        timestamp=time.time(),
+                        movement=datatypes.Movement3DoF(
+                            x=x,
+                            y=y,
+                            theta=t,
+                        ),
+                    )
+                )
                 await speeds_topic.post(datatypes.Vector(v, w, 0))
 
             await asyncio.sleep(odometry_post_delay)

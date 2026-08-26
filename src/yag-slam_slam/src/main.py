@@ -9,20 +9,26 @@ from yag_slam.scan_matching import Scan2DMatcherCpp
 from tiny_tf.tf import Transform
 from tiny_tf.transformations import quaternion_from_euler
 
+import time
 from miniros_configurator import get_config
 from miniros import AsyncROSClient, datatypes
 from miniros_slam.source.datatypes import SLAMOffsetMap
-from miniros.util.datatypes import Movement, Vector
+from miniros.util.datatypes import Movement3DoF, TimedMovement3DoF
 
 
-def movement2transform(msg: Movement) -> Transform:
-    t = msg.pos
-    r = msg.ang
-    return Transform(t.x, t.y, t.z, *quaternion_from_euler(r.x, r.y, r.z))
+def movement2transform(msg) -> Transform:
+    return Transform(msg.x, msg.y, 0, *quaternion_from_euler(0, 0, msg.theta))
 
 
-def pose2movement(pose: Pose2) -> Movement:
-    return Movement(Vector(pose.x, pose.y, 0), Vector(0, 0, pose.yaw))
+def pose2movement(pose: Pose2, timestamp: float):
+    return TimedMovement3DoF(
+        movement=Movement3DoF(
+            x=pose.x,
+            y=pose.y,
+            theta=pose.yaw,
+        ),
+        timestamp=timestamp,
+    )
 
 
 def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
@@ -56,12 +62,12 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
             if scan is None:
                 break
 
-            scan = datatypes.LidarDatatype.decode(scan)
+            scan = datatypes.Lidar2D.decode(scan)
 
         except Empty:
             continue
 
-        pose: Vector = scan.pos
+        pose = scan.pos
 
         # todo: check if this line necessary
         ranges, angles = zip(
@@ -81,14 +87,14 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
             lidar_range_threshold,
             pose.x,
             pose.y,
-            pose.z,
+            pose.theta,
         )
 
         res, closed = mapper.process_scan(data)
         if res is None or res.best_pose is None:
             continue
 
-        movement_msg = pose2movement(res.best_pose)
+        movement_msg = pose2movement(res.best_pose, scan.timestamp)
         mmap_data = None
 
         if map_counter % 3 == 0:
@@ -108,7 +114,7 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
             mmap_data = SLAMOffsetMap.encode(mmap_data)
 
         map_counter += 1
-        output_queue.put((Movement.encode(movement_msg), mmap_data))
+        output_queue.put((TimedMovement3DoF.encode(movement_msg), mmap_data))
 
 
 class SLAMClient(AsyncROSClient):

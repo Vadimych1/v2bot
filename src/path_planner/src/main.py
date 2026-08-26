@@ -7,7 +7,7 @@ import cv2 as cv
 from miniros import AsyncROSClient
 from miniros.util.decorators import aparsedata
 from miniros_slam.source.datatypes import SLAMOffsetMap
-from miniros.util.datatypes import Movement, Vector, NumpyArray
+from miniros.util.datatypes import TimedMovement3DoF, NumpyArray
 from miniros_configurator import get_config
 
 
@@ -361,9 +361,9 @@ class PathPlanner(AsyncROSClient):
         self.offset_y = map.offset_y
         self.resolution = map.resolution
 
-    @aparsedata(Movement)
-    async def on_slam_pose(self, pose: Movement):
-        self.start_pos = (pose.pos.x, pose.pos.y)
+    @aparsedata(TimedMovement3DoF)
+    async def on_slam_pose(self, pose):
+        self.start_pos = (pose.movement.x, pose.pose.movement.x)
 
     @aparsedata(Vector)
     async def on_goalmanager_currentgoal(self, goal: Vector):

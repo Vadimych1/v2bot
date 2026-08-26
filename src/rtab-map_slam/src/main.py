@@ -32,12 +32,12 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
             if scan is None:
                 break
 
-            scan = datatypes.LidarDatatype.decode(scan)
+            scan = datatypes.Lidar2D.decode(scan)
 
         except Empty:
             continue
 
-        pose: Vector = scan.pos
+        pose = scan.movement
         ranges, angles = scan.distances, scan.angles
 
         # py::arg("distances"),
@@ -51,11 +51,18 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
             angles,
             pose.x,
             pose.y,
-            pose.z,
-            time.time(),  # TODO: replace with LiDAR actual timestamp
+            pose.theta,
+            scan.timestamp,  # TODO: replace with LiDAR actual timestamp
         )
 
-        movement_msg = Movement(Vector(new_x, new_y, 0), Vector(0, 0, new_theta))
+        movement_msg = datatypes.TimedMovement3DoF(
+            timestamp=scan.timestamp,
+            movement=datatypes.Movement3DoF(
+                x=new_x,
+                y=new_y,
+                theta=new_theta,
+            ),
+        )
         mmap_data = None
 
         if map_counter % 3 == 0:
