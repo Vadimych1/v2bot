@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<package name="slam" version="1.0.0">
+	<entrypoint>main</entrypoint>
+
+	<maintainer>Vadimych1</maintainer>
+	<description>vgslam client for MiniROS</description>
+	<authors>
+		<author email="vadimlebedenko0@gmail.com">Vadimych1 (Vadim Lebedenko)</author>
+	</authors>
+
+	<requirements>
+		<!-- <pip>git+https://github.com/Vadimych1/vgslam.git#egg=vgslam</pip> -->
+		<miniros>miniros&gt;=1.1.0</miniros>
+	</requirements>
+</package>
