@@ -41,6 +41,7 @@ class MotionControllerConfig:
         self.weight_dist = get_config("motion_controller.weights.distance")
         self.weight_speed = get_config("motion_controller.weights.speed")
         self.weight_obstacle = get_config("motion_controller.weights.obstacle")
+        self.weight_progress = get_config("motion_controller.weights.progress")
 
         self.goal_tolerance = get_config("motion_controller.goal_tolerance")
         self.lookahead_distance = get_config("motion_controller.lookahead_distance")
@@ -93,6 +94,10 @@ class MotionController(AsyncROSClient):
         self.robot_x = 0.0
         self.robot_y = 0.0
         self.robot_heading = 0.0
+        
+        self.last_slam_pose = None
+        self.last_odom_pose = None
+        self.saved_odom_pose = None
 
         # linear and angular speeds
         self.current_v = 0.0
@@ -213,33 +218,49 @@ class MotionController(AsyncROSClient):
         dx = target_x - states[-1][0]
         dy = target_y - states[-1][1]
 
+        ### Heading cost
         angle_to_target = np.atan2(dy, dx)
-        heading_error = abs(self._normalize_angle(angle_to_target - states[-1][2]))
+        
+        if v >= 0:
+            movement_heading = states[-1][2]
+        
+        else:
+            movement_heading = states[-1][2] + np.pi
+        
+        heading_error = abs(self._normalize_angle(angle_to_target - movement_heading))
         heading_cost = self.config.weight_heading * heading_error
 
+        ### Progress reward
+        start_dist = np.hypot(self.robot_x - target_x, self.robot_y - target_y)
+        end_dist = np.hypot(states[-1][0] - target_x, states[-1][1] - target_y)
+        
+        progress = start_dist - end_dist
+        progress_cost = -self.config.weight_progress * progress
+        
+        ### Distance cost
         dist_to_target = np.hypot(states[-1][0] - target_x, states[-1][1] - target_y)
         dist_cost = self.config.weight_dist * (
             dist_to_target / (self.config.lookahead_distance + 1.0)
         )
 
-        # reward speed, moving backwards is allowed too
-        speed_cost = -self.config.weight_speed * (v if v >= 0 else -v * 0.8)
+        ### Speed cost
+        speed_cost = -self.config.weight_speed * (v if v >= 0 else -v * 0.9)
 
-        if 0 < v < 0.08:
-            speed_cost += 0.08 / abs(v)
-
-        # obstacle cost
+        ### Obstacle cost
         safety_margin = self.config.robot_radius
         influence_distance = (
             self.config.robot_radius + 0.05
         )  # TODO: get rid of magic value
 
         obstacle_cost = 0.0
+        
+        ### Stationary penalty
+        if abs(v) < 1e-4 and abs(w) < 1e-4:
+            stationary_penalty = 0.5
+        else:
+            stationary_penalty = 0.0
 
         for i, (x, y, _) in enumerate(states):
-            if i % 2 == 1:
-                continue
-
             clearance = self._get_obstacle_distance(x, y)
 
             if clearance < safety_margin:
@@ -257,9 +278,7 @@ class MotionController(AsyncROSClient):
 
         obstacle_cost *= self.config.weight_obstacle
 
-        total_cost = heading_cost + dist_cost + speed_cost + obstacle_cost
-
-        return total_cost
+        return heading_cost + dist_cost + speed_cost + obstacle_cost + progress_cost + stationary_penalty
 
     def _normalize_angle(self, angle: float):
         while angle > np.pi:
@@ -362,17 +381,32 @@ class MotionController(AsyncROSClient):
 
         self._last_map_ts = time.time()
 
-    # @aparsedata(Movement)
-    # async def on_slam_pose(self, pose: Movement):
-    #     self.robot_x = pose.pos.x
-    #     self.robot_y = pose.pos.y
-    #     self.robot_heading = pose.ang.z
+    @aparsedata(TimedMovement3DoF)
+    async def on_slam_pose(self, pose):
+        mov = pose.movement
+        
+        self.robot_x = mov.x
+        self.robot_y = mov.y
+        self.robot_heading = mov.theta
+        
+        self.last_slam_pose = mov
+        self.saved_odom_pose = self.last_odom_pose
+        
+        # self._last_odom_ts = pose.timestamp
 
     @aparsedata(TimedMovement3DoF)
     async def on_motorcontroller_odometry(self, odom):
-        mov = odom.movement
-        self.robot_x, self.robot_y, self.robot_heading = mov.x, mov.y, mov.theta
         self._last_odom_ts = odom.timestamp
+        self.last_odom_pose = odom.movement
+        
+        if self.last_slam_pose is not None and self.saved_odom_pose != None:
+            anchor_slam = self.last_slam_pose
+            anchor_odom = self.saved_odom_pose
+            cur_odom = self.last_odom_pose
+            
+            self.robot_x = anchor_slam.x + (cur_odom.x - anchor_odom.x)
+            self.robot_y = anchor_slam.y + (cur_odom.y - anchor_odom.y)
+            self.robot_heading = anchor_slam.theta + (cur_odom.theta - anchor_odom.theta)
 
     @aparsedata(Vector)
     async def on_motorcontroller_velocity(self, velocity: Vector):
@@ -403,11 +437,12 @@ async def main():
             ) or ts - client._last_map_ts >= get_config(
                 "motion_controller.map_max_age"
             ):
+                print("Max age:", ts - client._last_odom_ts, ts - client._last_map_ts)
                 await cmdvel_topic.post(Vector(0, 0, 0))
                 continue
 
             v, w = await asyncio.to_thread(client.compute_control)
-            await cmdvel_topic.post(Vector(v, w, 0))
+            await cmdvel_topic.post(Vector(v, -w, 0))
 
     path_track = asyncio.create_task(run_path_tracker())
 

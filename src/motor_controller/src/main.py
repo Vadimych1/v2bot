@@ -70,15 +70,15 @@ class MotorControllerClient(AsyncROSClient):
 
         await self.serial.set_speeds(l, -r)
 
-    @aparsedata(datatypes.TimedMovement3DoF)
-    async def on_slam_pose(self, data):
-        self.n += 1
+    # @aparsedata(datatypes.TimedMovement3DoF)
+    # async def on_slam_pose(self, data):
+    #     self.n += 1
         
-        mov = data.movement
-        print(mov.x, mov.y, mov.theta)
+    #     mov = data.movement
+    #     print(mov.x, mov.y, mov.theta)
 
-        if self.n % 30 == 0:
-            await self.serial.reset_position(mov.x, mov.y, mov.theta)
+        # if self.n % 300 == 0: # TODO: move to config
+        #     await self.serial.reset_position(mov.x, mov.y, -mov.theta)
 
     async def open_port(self):
         await self.serial.serial.open()
