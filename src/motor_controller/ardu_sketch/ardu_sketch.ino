@@ -15,8 +15,11 @@
 
 // right motor
 #define R_IN1 12
-#define R_IN2 13
+#define R_IN2 11
 #define R_EN 10
+
+// speed low pass filter
+#define SPEED_LOW_PASS_SIZE 10
 
 // extended kalman filter for realtime pose estimation and correction
 class EKF {
@@ -229,9 +232,9 @@ float v = 0.0, omega = 0.0;
 float speedLeft = 0.0, speedRight = 0.0;
 
 // PID constants
-const float Kp = 0.8;
-const float Ki = 15.0;
-const float Kd = 0;
+const float Kp = 0.0;
+const float Ki = 10.0;
+const float Kd = 0.0;
 const float PID_LIMIT = 255.0;
 
 // PID variables
@@ -244,19 +247,31 @@ unsigned long lastMicros = 0;
 // complementary filter dynamic value
 float alpha = 0.0;
 
-float leftMeasures[5] = {0, 0, 0, 0, 0};
+float leftMeasures[SPEED_LOW_PASS_SIZE] = {0};
 uint8_t leftMeasuresIdx = 0;
-float rightMeasures[5] = {0, 0, 0, 0, 0};
+float rightMeasures[SPEED_LOW_PASS_SIZE] = {0};
 uint8_t rightMeasuresIdx = 0;
 
 void setup() {
+  TCCR1B = (TCCR1B & ~((1 << CS10) | (1 << CS11) | (1 << CS12))) | (1 << CS11);
+
   pinMode(L_IN1, OUTPUT);
+  digitalWrite(L_IN1, LOW);
+
   pinMode(L_IN2, OUTPUT);
+  digitalWrite(L_IN2, LOW);
+
   pinMode(L_EN, OUTPUT);
+  analogWrite(L_EN, 0);
 
   pinMode(R_IN1, OUTPUT);
+  digitalWrite(R_IN1, LOW);
+
   pinMode(R_IN2, OUTPUT);
+  digitalWrite(R_IN2, LOW);
+
   pinMode(R_EN, OUTPUT);
+  analogWrite(R_EN, 0);
 
   Serial.begin(115200);
   Wire.begin();
@@ -409,6 +424,14 @@ void handleSerialInput() {
 
       speedLeft = newLeft;
       speedRight = newRight;
+
+      if (newLeft == 0.0) {
+        leftIntegral = 0.0;
+      }
+
+      if (newRight == 0.0) {
+        rightIntegral = 0.0;
+      }
     }
   }
 }
@@ -440,25 +463,25 @@ void motorControl(float dt, float dLeft, float dRight) {
   if (dt < 0.0001f) dt = 0.0001f;
 
   float leftMeas = (dLeft / WHEEL_RADIUS) / dt;
-  float rightMeas = (dRight / WHEEL_RADIUS) / dt;
+  float rightMeas = -(dRight / WHEEL_RADIUS) / dt;
 
   leftMeasures[leftMeasuresIdx] = leftMeas;
   rightMeasures[rightMeasuresIdx] = rightMeas;
 
   leftMeas = rightMeas = 0;
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < SPEED_LOW_PASS_SIZE; i++) {
     leftMeas += leftMeasures[i];
     rightMeas += rightMeasures[i];
   }
 
-  leftMeas /= 5;
-  rightMeas /= 5;
+  leftMeas /= SPEED_LOW_PASS_SIZE;
+  rightMeas /= SPEED_LOW_PASS_SIZE;
 
   leftMeasuresIdx += 1;
   rightMeasuresIdx += 1;
 
-  leftMeasuresIdx %= 5;
-  rightMeasuresIdx %= 5;
+  leftMeasuresIdx %= SPEED_LOW_PASS_SIZE;
+  rightMeasuresIdx %= SPEED_LOW_PASS_SIZE;
 
   float leftErr = speedLeft - leftMeas;
   float rightErr = speedRight - rightMeas;
@@ -482,5 +505,5 @@ void motorControl(float dt, float dLeft, float dRight) {
   rightPrevError = rightErr;
 
   setMotor(L_IN1, L_IN2, L_EN, leftPwm);
-  setMotor(R_IN1, R_IN2, R_EN, rightPwm * -1);
+  setMotor(R_IN1, R_IN2, R_EN, rightPwm);
 }

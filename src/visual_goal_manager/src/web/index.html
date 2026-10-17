@@ -1,0 +1,1342 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Robot Navigation</title>
+
+    <style>
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #202020;
+            font-family: Arial, sans-serif;
+        }
+
+        #map {
+            background-color: #7f7f7f;
+            cursor: pointer;
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        #info {
+            position: absolute;
+            left: 10px;
+            top: 10px;
+            padding: 12px 16px;
+            min-width: 220px;
+            background: rgba(0, 0, 0, 0.78);
+            color: white;
+            border-radius: 7px;
+            font-family: monospace;
+            line-height: 1.6;
+        }
+
+        .title {
+            font-weight: bold;
+            margin-bottom: 4px;
+        }
+
+        .separator {
+            height: 1px;
+            background: rgba(255, 255, 255, 0.25);
+            margin: 8px 0;
+        }
+
+        #controls {
+            position: absolute;
+            right: 10px;
+            top: 10px;
+            display: flex;
+            gap: 5px;
+        }
+
+        button {
+            padding: 8px 12px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #ddd;
+        }
+    </style>
+
+</head>
+
+<body>
+
+    <canvas id="map"></canvas>
+
+    <div id="info">
+        <div class="title">
+            ROBOT
+        </div>
+
+        <div>
+            X:
+            <span id="robot-x">---</span>
+            m
+        </div>
+
+        <div>
+            Y:
+            <span id="robot-y">---</span>
+            m
+        </div>
+
+        <div>
+            Heading:
+            <span id="robot-heading">---</span>
+            °
+        </div>
+
+        <div class="separator"></div>
+
+        <div class="title">
+            DAW
+        </div>
+
+        <div>
+            Linear:
+            <span id="linear-velocity">---</span>
+            m/s
+        </div>
+
+        <div>
+            Angular:
+            <span id="angular-velocity">---</span>
+            rad/s
+        </div>
+
+    </div>
+
+    <div id="controls">
+        <button onclick="centerRobot()">
+            Center robot
+        </button>
+
+        <button onclick="fitMap()">
+            Fit map
+        </button>
+
+        <button onclick="clearGoal()">
+            Clear goal
+        </button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById("map");
+        const ctx = canvas.getContext("2d");
+
+        let mapData = null;
+        let mapImage = null;
+        let robot = null;
+        let slam_robot = null;
+        let globalPath = [];
+        let goal = null;
+
+        let cmdvel = {
+            linear: 0,
+            angular: 0
+        };
+
+        /*
+         * Camera:
+         *
+         * camera.x/y are world coordinates
+         * at the center of the screen.
+         *
+         * zoom = pixels per meter.
+         */
+
+        let camera = {
+            x: 0,
+            y: 0,
+            zoom: 50
+        };
+
+
+        /*
+         * Mouse state
+         */
+
+        let dragging = false;
+
+        let lastMouseX = 0;
+        let lastMouseY = 0;
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+
+            draw();
+        }
+        window.addEventListener(
+            "resize",
+            resizeCanvas
+        );
+
+        function worldToScreen(x, y) {
+            return {
+                x:
+                    canvas.width / 2
+                    + (x - camera.x)
+                    * camera.zoom,
+                y:
+                    canvas.height / 2
+                    - (y - camera.y)
+                    * camera.zoom
+            };
+        }
+
+        function screenToWorld(x, y) {
+            return {
+                x:
+                    camera.x
+                    + (x - canvas.width / 2)
+                    / camera.zoom,
+                y:
+                    camera.y
+                    - (y - canvas.height / 2)
+                    / camera.zoom
+            };
+        }
+
+        function mapPixelToWorld(px, py) {
+            return {
+                x:
+                    (px - mapData.offset_x)
+                    * mapData.resolution,
+                y:
+                    (py - mapData.offset_y)
+                    * mapData.resolution
+            };
+        }
+
+        function worldToMapPixel(x, y) {
+            return {
+                x:
+                    x / mapData.resolution
+                    + mapData.offset_x,
+                y:
+                    y / mapData.resolution
+                    + mapData.offset_y
+            };
+        }
+
+        function draw() {
+            ctx.clearRect(
+                0,
+                0,
+                canvas.width,
+                canvas.height
+            );
+
+            if (!mapData || !mapImage)
+                return;
+
+            drawMap();
+            drawGlobalPath();
+            drawGoal();
+            drawTrajectory();
+            drawVelocityVector();
+            drawAngularVelocity();
+            drawRobot();
+            drawSlamRobot();
+        }
+
+
+        function drawMap() {
+
+            /*
+             * Convert map image corners into world coordinates.
+             */
+
+            const topLeft =
+                mapPixelToWorld(
+                    0,
+                    0
+                );
+
+            const bottomRight =
+                mapPixelToWorld(
+                    mapData.width,
+                    mapData.height
+                );
+
+
+            const p1 =
+                worldToScreen(
+                    topLeft.x,
+                    topLeft.y
+                );
+
+            const p2 =
+                worldToScreen(
+                    bottomRight.x,
+                    bottomRight.y
+                );
+
+
+            const x =
+                p1.x;
+
+            const y =
+                p2.y;
+
+            const width =
+                p2.x - p1.x;
+
+            const height =
+                p1.y - p2.y;
+
+
+            /*
+             * The canvas Y axis points down,
+             * while the world Y axis points up.
+             *
+             * Therefore flip the map vertically.
+             */
+
+            ctx.save();
+
+            ctx.translate(
+                x,
+                y + height
+            );
+
+            ctx.scale(
+                1,
+                -1
+            );
+
+            ctx.drawImage(
+                mapImage,
+                0,
+                0,
+                width,
+                height
+            );
+
+            ctx.restore();
+        }
+
+        function drawGlobalPath() {
+
+            if (
+                !globalPath ||
+                globalPath.length < 2
+            )
+                return;
+
+
+            ctx.beginPath();
+
+
+            for (
+                let i = 0;
+                i < globalPath.length;
+                i++
+            ) {
+
+                const point =
+                    globalPath[i];
+
+                const p =
+                    worldToScreen(
+                        point.x,
+                        point.y
+                    );
+
+
+                if (i === 0) {
+
+                    ctx.moveTo(
+                        p.x,
+                        p.y
+                    );
+
+                } else {
+
+                    ctx.lineTo(
+                        p.x,
+                        p.y
+                    );
+                }
+            }
+
+
+            ctx.lineWidth = 3;
+
+            ctx.strokeStyle =
+                "#00aaff";
+
+            ctx.stroke();
+        }
+
+        function drawRobot() {
+            if (!robot)
+                return;
+
+
+            const p =
+                worldToScreen(
+                    robot.x,
+                    robot.y
+                );
+
+
+            const radius =
+                0.2 * camera.zoom;
+
+
+            ctx.save();
+
+
+            ctx.translate(
+                p.x,
+                p.y
+            );
+
+
+            /*
+             * Robot heading.
+             *
+             * Canvas Y points downward,
+             * so negate the angle.
+             */
+
+            ctx.rotate(
+                -robot.heading
+            );
+
+
+            /*
+             * Robot body
+             */
+
+            ctx.beginPath();
+
+            ctx.arc(
+                0,
+                0,
+                radius,
+                0,
+                Math.PI * 2
+            );
+
+            ctx.fillStyle =
+                "#ff4444";
+
+            ctx.fill();
+
+
+            /*
+             * Heading arrow
+             */
+
+            ctx.beginPath();
+
+            ctx.moveTo(
+                0,
+                0
+            );
+
+            ctx.lineTo(
+                radius * 1.8,
+                0
+            );
+
+            ctx.strokeStyle =
+                "#ff0000";
+
+            ctx.lineWidth = 3;
+
+            ctx.stroke();
+
+
+            /*
+             * Arrow head
+             */
+
+            ctx.beginPath();
+
+            ctx.moveTo(
+                radius * 1.8,
+                0
+            );
+
+            ctx.lineTo(
+                radius * 1.3,
+                -radius * 0.35
+            );
+
+            ctx.lineTo(
+                radius * 1.3,
+                radius * 0.35
+            );
+
+            ctx.closePath();
+
+            ctx.fillStyle =
+                "#ff0000";
+
+            ctx.fill();
+
+
+            ctx.restore();
+        }
+
+        function drawSlamRobot() {
+            if (!slam_robot)
+                return;
+
+
+            const p =
+                worldToScreen(
+                    slam_robot.x,
+                    slam_robot.y
+                );
+
+
+            const radius =
+                0.1 * camera.zoom;
+
+
+            ctx.save();
+
+            ctx.translate(
+                p.x,
+                p.y
+            );
+
+
+            /*
+             * Robot heading.
+             *
+             * Canvas Y points downward,
+             * so negate the angle.
+             */
+
+            ctx.rotate(
+                -slam_robot.heading
+            );
+
+
+            /*
+             * Robot body
+             */
+
+            ctx.beginPath();
+
+            ctx.arc(
+                0,
+                0,
+                radius,
+                0,
+                Math.PI * 2
+            );
+
+            ctx.globalAlpha = 0.4;
+            ctx.fillStyle = "#44ff44";
+
+            ctx.fill();
+
+
+            /*
+             * Heading arrow
+             */
+
+            ctx.beginPath();
+
+            ctx.moveTo(
+                0,
+                0
+            );
+
+            ctx.lineTo(
+                radius * 1.8,
+                0
+            );
+
+            ctx.strokeStyle =
+                "#00ff00";
+
+            ctx.lineWidth = 3;
+
+            ctx.stroke();
+
+
+            /*
+             * Arrow head
+             */
+
+            ctx.beginPath();
+
+            ctx.moveTo(
+                radius * 1.8,
+                0
+            );
+
+            ctx.lineTo(
+                radius * 1.3,
+                -radius * 0.35
+            );
+
+            ctx.lineTo(
+                radius * 1.3,
+                radius * 0.35
+            );
+
+            ctx.closePath();
+
+            ctx.fillStyle =
+                "#00ff00";
+
+            ctx.fill();
+
+            ctx.restore();
+
+            ctx.globalAlpha = 1.0;
+        }
+
+        function drawGoal() {
+
+            if (!goal)
+                return;
+
+
+            const p =
+                worldToScreen(
+                    goal.x,
+                    goal.y
+                );
+
+
+            const size = 10;
+
+
+            ctx.beginPath();
+
+            ctx.moveTo(
+                p.x - size,
+                p.y - size
+            );
+
+            ctx.lineTo(
+                p.x + size,
+                p.y + size
+            );
+
+            ctx.moveTo(
+                p.x + size,
+                p.y - size
+            );
+
+            ctx.lineTo(
+                p.x - size,
+                p.y + size
+            );
+
+
+            ctx.strokeStyle =
+                "#ffcc00";
+
+            ctx.lineWidth = 3;
+
+            ctx.stroke();
+        }
+
+        function drawAngularVelocity() {
+            if (!robot || !cmdvel)
+                return;
+
+            if (
+                Math.abs(cmdvel.angular) < 0.001
+            ) {
+                return;
+            }
+
+            const p =
+                worldToScreen(
+                    robot.x,
+                    robot.y
+                );
+
+            const radius =
+                0.3 * camera.zoom;
+
+
+            const magnitude =
+                Math.min(
+                    Math.abs(cmdvel.angular),
+                    2.0
+                );
+
+
+            /*
+             * Larger angular velocity =
+             * larger arc.
+             */
+
+            const arc =
+                0.6 +
+                magnitude * 0.5;
+
+
+            ctx.save();
+
+            ctx.translate(
+                p.x,
+                p.y
+            );
+
+
+            ctx.beginPath();
+
+
+            /*
+             * Canvas rotation direction is opposite
+             * to the mathematical positive rotation.
+             */
+
+            const direction =
+                Math.sign(
+                    cmdvel.angular
+                );
+
+
+            ctx.arc(
+                0,
+                0,
+                radius,
+                -Math.PI / 2,
+                -Math.PI / 2 +
+                direction * arc,
+                direction < 0
+            );
+
+
+            ctx.strokeStyle =
+                "#ffcc00";
+
+            ctx.lineWidth = 4;
+
+            ctx.stroke();
+
+
+            ctx.restore();
+        }
+
+        function drawVelocityVector() {
+
+            if (!robot || !cmdvel)
+                return;
+
+
+            const p =
+                worldToScreen(
+                    robot.x,
+                    robot.y
+                );
+
+
+            /*
+             * Don't draw the vector when
+             * the commanded velocity is
+             * essentially zero.
+             */
+
+            if (
+                Math.abs(cmdvel.linear) < 0.001 &&
+                Math.abs(cmdvel.angular) < 0.001
+            ) {
+                return;
+            }
+
+
+            /*
+             * Convert linear velocity into
+             * a visually useful arrow length.
+             *
+             * This is visualization scaling,
+             * not physical distance.
+             */
+
+            const arrowLength =
+                cmdvel.linear *
+                camera.zoom *
+                1.5;
+
+
+            ctx.save();
+
+            ctx.translate(
+                p.x,
+                p.y
+            );
+
+            ctx.rotate(
+                -robot.heading
+            );
+
+
+            /*
+             * Linear velocity vector
+             */
+
+            ctx.beginPath();
+
+            ctx.moveTo(
+                0,
+                0
+            );
+
+            ctx.lineTo(
+                arrowLength,
+                0
+            );
+
+
+            ctx.strokeStyle =
+                "#00ff88";
+
+            ctx.lineWidth = 4;
+
+            ctx.stroke();
+
+
+            /*
+             * Arrow head
+             */
+
+            const direction =
+                Math.sign(
+                    cmdvel.linear
+                ) || 1;
+
+
+            ctx.beginPath();
+
+            ctx.moveTo(
+                arrowLength,
+                0
+            );
+
+            ctx.lineTo(
+                arrowLength -
+                direction * 10,
+                -6
+            );
+
+            ctx.moveTo(
+                arrowLength,
+                0
+            );
+
+            ctx.lineTo(
+                arrowLength -
+                direction * 10,
+                6
+            );
+
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        function drawTrajectory(dt = 0.2, time = 2) {
+            if (!robot || !cmdvel)
+                return;
+
+            let cx = robot.x, cy = robot.y, ctheta = robot.heading;
+            let v = cmdvel.linear, w = cmdvel.angular;
+            const start = worldToScreen(cx, cy);
+
+            ctx.strokeStyle = "#DD661A"
+            ctx.lineWidth = 3;
+
+            ctx.beginPath()
+            ctx.moveTo(start.x, start.y)
+
+            for (let i = 0; i < Math.ceil(time / dt); i++) {
+                let s = v * dt;
+
+                cx += s * Math.cos(ctheta);
+                cy += s * Math.sin(ctheta);
+                ctheta += w * dt;
+
+                const new_point = worldToScreen(cx, cy);
+                ctx.lineTo(new_point.x, new_point.y);
+            }
+
+            ctx.stroke();
+        }
+
+        canvas.addEventListener(
+            "click",
+            event => {
+                if (!mapData) return;
+
+                /*
+                 * Ignore click if it was actually
+                 * the end of a drag operation.
+                 */
+
+                if (dragging) return;
+
+                const rect = canvas.getBoundingClientRect();
+
+                const sx = event.clientX - rect.left;
+                const sy = event.clientY - rect.top
+
+                const world = screenToWorld(sx, sy);
+
+                goal = {
+                    x: world.x,
+                    y: world.y
+                };
+
+                sendGoal(
+                    world.x,
+                    world.y
+                );
+
+                draw();
+            }
+        );
+
+
+        /* ============================================================
+         * SEND GOAL
+         * ============================================================ */
+
+        function sendGoal(x, y) {
+
+            if (
+                !socket ||
+                socket.readyState !== WebSocket.OPEN
+            )
+                return;
+
+
+            socket.send(
+                JSON.stringify({
+
+                    type: "goal",
+
+                    x: x,
+                    y: y
+                })
+            );
+        }
+
+
+        /* ============================================================
+         * CLEAR GOAL
+         * ============================================================ */
+
+        function clearGoal() {
+
+            goal = null;
+
+            draw();
+        }
+
+
+        /* ============================================================
+         * CENTER ROBOT
+         * ============================================================ */
+
+        function centerRobot() {
+
+            if (!robot)
+                return;
+
+
+            camera.x =
+                robot.x;
+
+            camera.y =
+                robot.y;
+
+
+            draw();
+        }
+
+
+        /* ============================================================
+         * FIT MAP
+         * ============================================================ */
+
+        function fitMap() {
+
+            if (!mapData)
+                return;
+
+
+            const minX =
+                -mapData.offset_x *
+                mapData.resolution;
+
+            const maxX =
+                (mapData.width -
+                    mapData.offset_x) *
+                mapData.resolution;
+
+
+            const minY =
+                -mapData.offset_y *
+                mapData.resolution;
+
+            const maxY =
+                (mapData.height -
+                    mapData.offset_y) *
+                mapData.resolution;
+
+
+            camera.x =
+                (minX + maxX) / 2;
+
+            camera.y =
+                (minY + maxY) / 2;
+
+
+            const worldWidth =
+                maxX - minX;
+
+            const worldHeight =
+                maxY - minY;
+
+
+            camera.zoom =
+                Math.min(
+
+                    canvas.width /
+                    worldWidth,
+
+                    canvas.height /
+                    worldHeight
+
+                ) * 0.9;
+
+
+            draw();
+        }
+
+        /* ============================================================
+         * ZOOM
+         * ============================================================ */
+
+        canvas.addEventListener(
+            "wheel",
+            event => {
+
+                event.preventDefault();
+
+
+                const rect =
+                    canvas.getBoundingClientRect();
+
+
+                const mouseX =
+                    event.clientX -
+                    rect.left;
+
+                const mouseY =
+                    event.clientY -
+                    rect.top;
+
+
+                /*
+                 * World position under cursor
+                 * before zoom.
+                 */
+
+                const before =
+                    screenToWorld(
+                        mouseX,
+                        mouseY
+                    );
+
+
+                const factor =
+                    event.deltaY < 0
+                        ? 1.15
+                        : 1 / 1.15;
+
+
+                camera.zoom *= factor;
+
+
+                /*
+                 * Keep the same world position
+                 * under the mouse cursor.
+                 */
+
+                const after =
+                    screenToWorld(
+                        mouseX,
+                        mouseY
+                    );
+
+
+                camera.x +=
+                    before.x - after.x;
+
+                camera.y +=
+                    before.y - after.y;
+
+
+                draw();
+            },
+            {
+                passive: false
+            }
+        );
+
+
+        /* ============================================================
+         * PAN
+         * ============================================================ */
+
+        canvas.addEventListener(
+            "mousedown",
+            event => {
+
+                if (event.button !== 1)
+                    return;
+
+
+                dragging = true;
+
+                lastMouseX =
+                    event.clientX;
+
+                lastMouseY =
+                    event.clientY;
+            }
+        );
+
+
+        canvas.addEventListener(
+            "mousemove",
+            event => {
+
+                if (!dragging)
+                    return;
+
+
+                const dx =
+                    event.clientX -
+                    lastMouseX;
+
+                const dy =
+                    event.clientY -
+                    lastMouseY;
+
+
+                camera.x -=
+                    dx / camera.zoom;
+
+                camera.y +=
+                    dy / camera.zoom;
+
+
+                lastMouseX =
+                    event.clientX;
+
+                lastMouseY =
+                    event.clientY;
+
+
+                draw();
+            }
+        );
+
+
+        window.addEventListener(
+            "mouseup",
+            event => {
+
+                if (event.button === 1)
+                    dragging = false;
+            }
+        );
+
+
+        /* ============================================================
+         * WEBSOCKET
+         * ============================================================ */
+
+        const socket =
+            new WebSocket(
+                `ws://${location.host}/ws`
+            );
+
+
+        // socket.onopen = () => {
+        //     document.getElementById(
+        //         "info"S
+        //     ).textContent =
+        //         "Connected";
+        // };
+
+
+        // socket.onclose = () => {
+
+        //     document.getElementById(
+        //         "info"
+        //     ).textContent =
+        //         "Disconnected";
+        // };
+
+
+        // socket.onerror = () => {
+
+        //     document.getElementById(
+        //         "info"
+        //     ).textContent =
+        //         "WebSocket error";
+        // };
+
+
+        socket.onmessage = event => {
+            const message =
+                JSON.parse(
+                    event.data
+                );
+
+
+            if (message.type === "cmdvel") {
+                cmdvel = message.cmdvel;
+                draw();
+                updateInfo();
+            }
+
+            if (message.type === "map") {
+                mapData =
+                    message.map;
+                mapImage =
+                    new Image();
+                mapImage.onload = () => {
+
+                    /*
+                     * First map received.
+                     */
+
+                    if (
+                        camera.zoom === 50 &&
+                        camera.x === 0 &&
+                        camera.y === 0
+                    ) {
+
+                        fitMap();
+                    }
+
+
+                    draw();
+                };
+                mapImage.src =
+                    "data:image/png;base64," +
+                    mapData.image;
+            }
+
+
+            /* --------------------------------------------------------
+             * POSE
+             * -------------------------------------------------------- */
+
+            if (message.type === "pose") {
+
+                robot =
+                    message.pose;
+
+
+                draw();
+
+
+                updateInfo();
+            }
+
+            if (message.type === "slam_pose") {
+                slam_robot = message.pose;
+
+                draw();
+            }
+
+
+            /* --------------------------------------------------------
+             * GLOBAL PATH
+             * -------------------------------------------------------- */
+
+            if (message.type === "path") {
+
+                globalPath =
+                    message.path || [];
+
+
+                draw();
+            }
+        };
+
+
+        /* ============================================================
+         * INFO PANEL
+         * ============================================================ */
+
+        function updateInfo() {
+
+            if (robot) {
+                document.getElementById(
+                    "robot-x"
+                ).textContent =
+                    robot.x.toFixed(3);
+
+                document.getElementById(
+                    "robot-y"
+                ).textContent =
+                    robot.y.toFixed(3);
+
+
+                const degrees =
+                    robot.heading *
+                    180 /
+                    Math.PI;
+
+
+                document.getElementById(
+                    "robot-heading"
+                ).textContent =
+                    degrees.toFixed(1);
+            }
+
+            if (cmdvel) {
+
+                document.getElementById(
+                    "linear-velocity"
+                ).textContent =
+                    cmdvel.linear.toFixed(3);
+
+                document.getElementById(
+                    "angular-velocity"
+                ).textContent =
+                    cmdvel.angular.toFixed(3);
+            }
+        }
+
+        resizeCanvas();
+    </script>
+
+</body>
+
+</html>

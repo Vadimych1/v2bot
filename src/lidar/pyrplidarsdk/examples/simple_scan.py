@@ -10,8 +10,8 @@ Copyright (C) 2025 Dexmate Inc.
 Licensed under MIT License
 """
 
-import pyrplidarsdk
-from pyrplidarsdk.utils import (
+import lidar.pyrplidarsdk.pyrplidarsdk as pyrplidarsdk
+from lidar.pyrplidarsdk.pyrplidarsdk.utils import (
     compute_scan_statistics, filter_by_quality, filter_by_range,
     to_numpy_arrays, angles_to_degrees, detect_obstacles, 
     downsample_scan, smooth_ranges

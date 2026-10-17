@@ -1,3 +1,3 @@
 
 # Add your importables here
-from source.datatypes import *
+from miniros_goal_manager.source.datatypes import *

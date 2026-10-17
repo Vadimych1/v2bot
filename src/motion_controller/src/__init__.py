@@ -1,3 +1,3 @@
 
 # Add your importables here
-from source.datatypes import *
+from miniros_motion_controller.source.datatypes import *

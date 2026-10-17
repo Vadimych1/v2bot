@@ -1,0 +1,8 @@
+<?xml version="1.0" ?>
+<package name="configurator" version="1.0.0">
+	<entrypoint>main</entrypoint>
+	<maintainer>Vadimych1 (Vadim Lebedenko)</maintainer>
+	<description>JSON-file configurator</description>
+	<authors/>
+	<requirements/>
+</package>
