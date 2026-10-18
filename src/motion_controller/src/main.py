@@ -20,7 +20,7 @@ class MotionControllerConfig:
             "motion_controller.kinematics.min_linear_speed"
         )
         self.max_angular_speed = get_config(
-            "motion_controller.kinematics.angular_speed"
+            "motion_controller.kinematics.max_angular_speed"
         )
         self.max_linear_accel = get_config(
             "motion_controller.kinematics.max_linear_accel"
@@ -407,7 +407,7 @@ async def main():
                 continue
 
             v, w = await asyncio.to_thread(client.compute_control)
-            await cmdvel_topic.post(Vector(v, -w, 0))
+            await cmdvel_topic.post(Vector(v, w, 0))
 
     path_track = asyncio.create_task(run_path_tracker())
 

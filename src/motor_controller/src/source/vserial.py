@@ -42,9 +42,18 @@ class ArduinoSerial:
             pass
 
     async def fetch_task(self):
+                
+        nq = 0
+        nq_start_time = time.time()
+
         self.running.set()
         while self.running.is_set():
+            nq += 1
             await self.fetch_one()
+            
+            if nq % 30 == 0:
+                print(f"Running at {nq / (time.time() - nq_start_time)}Hz")
+    
 
     async def close(self):
         """Close serial connection"""

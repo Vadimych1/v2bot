@@ -160,7 +160,7 @@ public:
             laserScan,
             cv::Mat(),
             cv::Mat(),
-            rtabmap::CameraModel(),
+            {},
             scanId_++,
             timestamp);
 
@@ -177,6 +177,11 @@ public:
             const rtabmap::Statistics &stats = rtabmap_.getStatistics();
             const rtabmap::Signature &node = stats.getLastSignatureData();
 
+            if (!stats.mapCorrection().isNull()) {
+                std::cout << "Updated map correction" << std::endl;
+                mapToOdom = stats.mapCorrection();
+            }
+
             if (node.sensorData().gridCellSize() > 0.0f)
             {
                 if (grid.addedNodes().find(node.id()) == grid.addedNodes().end())
@@ -190,11 +195,12 @@ public:
             grid.update(stats.poses());
         }
 
-        rtabmap::Transform pose = getPose();
+        
+        rtabmap::Transform mapPose = mapToOdom * odom;
 
-        float px = pose.x();
-        float py = pose.y();
-        float ptheta = pose.theta();
+        float px = mapPose.x();
+        float py = mapPose.y();
+        float ptheta = mapPose.theta();
 
         return py::make_tuple(
             px,
@@ -222,6 +228,8 @@ private:
     rtabmap::Rtabmap rtabmap_;
     int scanId_ = 0;
 
+    rtabmap::Transform mapToOdom = rtabmap::Transform::getIdentity();
+
     float _lidarMinRange;
     float _lidarMaxRange;
 
@@ -234,11 +242,6 @@ private:
     {
         cv::Mat map = grid.getMap(xMin, yMin); // -1 unknown, 0 free, 100 occupied
         return convertGrid(map);
-    }
-
-    rtabmap::Transform getPose() const
-    {
-        return rtabmap_.getPose(scanId_);
     }
 };
 

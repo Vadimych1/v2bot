@@ -68,16 +68,17 @@ class MotorControllerClient(AsyncROSClient):
 
         l, r = self.ik.calculate_wheel_speeds(v, w)
 
-        await self.serial.set_speeds(l, r)
+        await self.serial.set_speeds(l, -r)
 
     @aparsedata(datatypes.TimedMovement3DoF)
     async def on_slam_pose(self, data):
         self.n += 1
-
+        
         mov = data.movement
-        if self.n % 3 == 0:
-            x, y, theta = mov.x, mov.y, mov.theta
-            await self.serial.reset_position(x, y, theta)
+        print(mov.x, mov.y, mov.theta)
+
+        if self.n % 30 == 0:
+            await self.serial.reset_position(mov.x, mov.y, mov.theta)
 
     async def open_port(self):
         await self.serial.serial.open()
@@ -118,7 +119,7 @@ async def main():
                     )
                 )
                 await speeds_topic.post(datatypes.Vector(v, w, 0))
-
+            
             await asyncio.sleep(odometry_post_delay)
 
         await client.stop()
