@@ -21,183 +21,6 @@
 // speed low pass filter
 #define SPEED_LOW_PASS_SIZE 10
 
-// extended kalman filter for realtime pose estimation and correction
-class EKF {
-public:
-  float x, y, theta;  // state
-
-  float P[9];  // covariance matrix (3x3)
-  float Q[9];  // process (odometry) noise matrix
-  float R[9];  // measurement (SLAM) noise matrix
-
-  // ekf buffers
-  float F[9], FP[9], FPFt[9];  // F, F * P, (F * P) * F^T
-  float S[9], S_inv[9], K[9], I_m_K[9], newP[9];
-  float Z[3], KZ[3];
-
-  EKF() {
-    x = 0;
-    y = 0;
-    theta = 0;
-
-    float P_init[9] = { 0.1, 0, 0, 0, 0.1, 0, 0, 0, 0.1 };
-    memcpy(P, P_init, sizeof(P));
-
-    float Q_init[9] = { 0.012, 0, 0, 0, 0.012, 0, 0, 0, 0.004 };
-    memcpy(Q, Q_init, sizeof(Q));
-
-    float R_init[9] = { 0.04, 0, 0, 0, 0.04, 0, 0, 0, 0.015 };
-    memcpy(R, R_init, sizeof(R));
-  }
-
-  /// predicts position using odometry data
-  void predict(float v, float omega, float dt) {
-    theta += omega * dt;
-
-    // normalize angle
-    while (theta > PI)
-      theta -= 2 * PI;
-    while (theta < -PI)
-      theta += 2 * PI;
-
-    float st = sinf(theta);
-    float ct = cosf(theta);
-
-    x += v * dt * ct;
-    y += v * dt * st;
-
-    // jacobian matrix
-    F[0] = 1.0;
-    F[1] = 0.0;
-    F[2] = -v * dt * st;
-    F[3] = 0.0;
-    F[4] = 1.0;
-    F[5] = v * dt * ct;
-    F[6] = 0.0;
-    F[7] = 0.0;
-    F[8] = 1.0;
-
-    // mat mul
-    for (int i = 0; i < 3; i++) {
-      for (int j = 0; j < 3; j++) {
-        FP[i * 3 + j] = 0;
-
-        for (int k = 0; k < 3; k++) {
-          FP[i * 3 + j] += F[i * 3 + k] * P[k * 3 + j];
-        }
-      }
-    }
-
-    for (int i = 0; i < 3; i++) {
-      for (int j = 0; j < 3; j++) {
-        FPFt[i * 3 + j] = 0;
-        for (int k = 0; k < 3; k++) {
-          FPFt[i * 3 + j] += FP[i * 3 + k] * F[j * 3 + k];
-        }
-      }
-    }
-
-    for (int i = 0; i < 9; i++) {
-      P[i] = FPFt[i] + Q[i];
-    }
-  }
-
-  /// updates position using SLAM data
-  void update(float sx, float sy, float stheta) {
-    float yaw_err = stheta - theta;
-
-    // normalize angle
-    while (yaw_err > PI)
-      yaw_err -= 2 * PI;
-    while (yaw_err < -PI)
-      yaw_err += 2 * PI;
-
-    // error matrix
-    Z[0] = sx - x;
-    Z[1] = sy - y;
-    Z[2] = yaw_err;
-
-    for (int i = 0; i < 9; i++) {
-      S[i] = P[i] + R[i];
-    }
-
-    // invert S
-    if (!invert3x3(S, S_inv)) {
-      return;
-    }
-
-    // kalman coef
-    for (int i = 0; i < 3; i++) {
-      for (int j = 0; j < 3; j++) {
-        K[i * 3 + j] = 0;
-
-        for (int k = 0; k < 3; k++) {
-          K[i * 3 + j] += P[i * 3 + k] * S_inv[k * 3 + j];
-        }
-      }
-    }
-
-    KZ[0] = KZ[1] = KZ[2] = 0.0f;
-    for (int i = 0; i < 3; i++) {
-      for (int j = 0; j < 3; j++) {
-        KZ[i] += K[i * 3 + j] * Z[j];
-      }
-    }
-
-    x += KZ[0];
-    y += KZ[1];
-    theta += KZ[2];
-
-    // normalize angle
-    while (theta > PI)
-      theta -= 2 * PI;
-    while (theta < -PI)
-      theta += 2 * PI;
-
-    // update covariance P = (I - K) * P;
-    I_m_K[0] = 1 - K[0];
-    I_m_K[1] = -K[1];
-    I_m_K[2] = -K[2];
-    I_m_K[3] = -K[3];
-    I_m_K[4] = 1 - K[4];
-    I_m_K[5] = -K[5];
-    I_m_K[6] = -K[6];
-    I_m_K[7] = -K[7];
-    I_m_K[8] = 1 - K[8];
-
-    for (int i = 0; i < 3; i++) {
-      for (int j = 0; j < 3; j++) {
-        newP[i * 3 + j] = 0;
-        for (int k = 0; k < 3; k++) {
-          newP[i * 3 + j] += I_m_K[i * 3 + k] * P[k * 3 + j];
-        }
-      }
-    }
-
-    memcpy(P, newP, sizeof(P));
-  }
-
-private:
-  bool invert3x3(const float m[9], float inv[9]) {
-    float det = m[0] * (m[4] * m[8] - m[7] * m[5]) - m[1] * (m[3] * m[8] - m[6] * m[5]) + m[2] * (m[3] * m[7] - m[6] * m[4]);
-
-    if (fabs(det) < 1e-8) return false;
-
-    float invDet = 1.0 / det;
-    inv[0] = (m[4] * m[8] - m[7] * m[5]) * invDet;
-    inv[1] = (m[2] * m[7] - m[1] * m[8]) * invDet;
-    inv[2] = (m[1] * m[5] - m[2] * m[4]) * invDet;
-    inv[3] = (m[5] * m[6] - m[3] * m[8]) * invDet;
-    inv[4] = (m[0] * m[8] - m[2] * m[6]) * invDet;
-    inv[5] = (m[2] * m[3] - m[0] * m[5]) * invDet;
-    inv[6] = (m[3] * m[7] - m[4] * m[6]) * invDet;
-    inv[7] = (m[1] * m[6] - m[0] * m[7]) * invDet;
-    inv[8] = (m[0] * m[4] - m[1] * m[3]) * invDet;
-
-    return true;
-  }
-};
-
 // hardware constants
 const float WHEEL_RADIUS = 0.0189;
 const float WHEEL_BASE = 0.198;
@@ -209,7 +32,7 @@ const float WHEEL_BASE = 0.198;
 // 3. rotate wheel by 360 degrees exactly 10 times
 // 4. get last serial output, divide it by 10 and round to the next integer
 // you may turn wheel more times to get better results, but usually 10 is enough
-const int TICKS_PER_REV = 682;
+const int TICKS_PER_REV = 680;
 const float DIST_PER_TICK = (2 * PI * WHEEL_RADIUS) / TICKS_PER_REV;
 
 // encoders
@@ -225,7 +48,7 @@ int16_t gyroZ_offset = 0;
 const float GYRO_SCALE = PI / (180.0 * 16.4);
 
 // orientation variables
-EKF filter;
+float x = 0.0, y = 0.0, theta = 0.0;
 float v = 0.0, omega = 0.0;
 
 // wheels target speeds
@@ -311,8 +134,8 @@ void calibrateGyro(int samples) {
 
 uint8_t ticks = 0;
 void loop() {
-  // if (millis() - lastUpdateTime >= 500) {
-  //   lastUpdateTime = millis();
+  // if (micros() - lastMicros >= 500000) {
+  //   lastMicros = micros();
 
   //   Serial.println(leftEnc.read());
   // }
@@ -327,7 +150,14 @@ void loop() {
 
     float dt = (now - lastMicros) * 1e-6f;  // seconds
 
-    if (dt <= 0.0 || dt > 0.25) {
+    if (dt <= 0.0) {
+      lastMicros = now;
+      return;
+    }
+
+    if (dt > 0.25) {
+      lastLeftTicks = leftEnc.read();
+      lastRightTicks = -rightEnc.read();
       lastMicros = now;
       return;
     }
@@ -352,7 +182,7 @@ void loop() {
     float omega_enc = dThetaEnc / dt;
 
     // recalculate alpha value
-    if (abs(deltaLeft) > 0 || abs(deltaRight) > 0) {
+    if (labs(deltaLeft) > 0 || labs(deltaRight) > 0) {
       alpha = 0.98;
     } else {
       alpha = 0;
@@ -364,7 +194,15 @@ void loop() {
 
     // update motor signals
     motorControl(dt, dLeft, dRight);
-    filter.predict(v, omega, dt);
+
+    theta += omega * dt;
+    theta = fmodf(theta + PI, 2 * PI) - PI;
+
+    float st = sinf(theta);
+    float ct = cosf(theta);
+
+    x += v * dt * ct;
+    y -= v * dt * st; // TODO: check if the minus needed here
 
     // reset time
     lastMicros = now;
@@ -374,11 +212,11 @@ void loop() {
   if (ticks >= 10) {
     ticks = 0;
 
-    Serial.print(filter.x, 4);
+    Serial.print(x, 4);
     Serial.print(" ");
-    Serial.print(filter.y, 4);
+    Serial.print(y, 4);
     Serial.print(" ");
-    Serial.print(filter.theta, 4);
+    Serial.print(theta, 4);
     Serial.print(" ");
     Serial.print(v, 4);
     Serial.print(" ");
@@ -386,52 +224,66 @@ void loop() {
   }
 }
 
-char cmd[32];
+// non-blocking approach
 void handleSerialInput() {
-  if (Serial.available() > 0) {
-    Serial.readBytesUntil('\n', cmd, 32);
-    char* token = strtok(cmd, " ");
+  static char buf[32];
+  static uint8_t idx = 0;
+
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (idx > 0) {
+        buf[idx] = '\0';
+        processCommand(buf);   // move your strtok logic here
+        idx = 0;
+      }
+    } else if (idx < sizeof(buf) - 1) {
+      buf[idx++] = c;
+    }
+  }
+}
+
+void processCommand(char* cmd) {
+  char* token = strtok(cmd, " ");
+  if (!token) return;
+
+  if (token[0] == 'R') {
+    token = strtok(NULL, " ");
     if (!token) return;
+    float newX = atof(token);
 
-    if (token[0] == 'R') {
-      token = strtok(NULL, " ");
-      if (!token) return;
-      float newX = atof(token);
+    token = strtok(NULL, " ");
+    if (!token) return;
+    float newY = atof(token);
 
-      token = strtok(NULL, " ");
-      if (!token) return;
-      float newY = atof(token);
+    token = strtok(NULL, " ");
+    if (!token) return;
+    float newH = atof(token);
 
-      token = strtok(NULL, " ");
-      if (!token) return;
-      float newH = atof(token);
+    // hard reset variables
+    x = newX;
+    y = newY;
+    theta = newH;
 
-      // old: hard reset variables
-      // x = newX;
-      // y = newY;
-      // heading = newH;
+    theta = fmodf(theta + PI, 2 * PI) - PI;
+  } else if (token[0] == 'S') {
+    token = strtok(NULL, " ");
+    if (!token) return;
+    float newLeft = atof(token);
 
-      // new: use EKF to estimate position
-      filter.update(newX, newY, newH);
-    } else if (token[0] == 'S') {
-      token = strtok(NULL, " ");
-      if (!token) return;
-      float newLeft = atof(token);
+    token = strtok(NULL, " ");
+    if (!token) return;
+    float newRight = atof(token);
 
-      token = strtok(NULL, " ");
-      if (!token) return;
-      float newRight = atof(token);
+    speedLeft = newLeft;
+    speedRight = newRight;
 
-      speedLeft = newLeft;
-      speedRight = newRight;
+    if (newLeft == 0.0) {
+      leftIntegral = 0.0;
+    }
 
-      if (newLeft == 0.0) {
-        leftIntegral = 0.0;
-      }
-
-      if (newRight == 0.0) {
-        rightIntegral = 0.0;
-      }
+    if (newRight == 0.0) {
+      rightIntegral = 0.0;
     }
   }
 }

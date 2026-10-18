@@ -6,6 +6,20 @@
     <title>Robot Navigation</title>
 
     <style>
+        :root {
+            --bg: #0b0e13;
+            --panel-bg: rgba(16, 20, 27, 0.82);
+            --panel-border: rgba(255, 255, 255, 0.08);
+            --panel-border-hover: rgba(255, 255, 255, 0.18);
+            --text: #e8edf4;
+            --muted: #7d8798;
+            --accent: #2dd4bf;
+            --accent-soft: rgba(45, 212, 191, 0.12);
+            --ok: #34d399;
+            --warn: #fbbf24;
+            --err: #f87171;
+        }
+
         html,
         body {
             margin: 0;
@@ -13,125 +27,324 @@
             width: 100%;
             height: 100%;
             overflow: hidden;
-            background: #202020;
-            font-family: Arial, sans-serif;
+            background:
+                radial-gradient(circle at 50% 40%, #141a24 0%, var(--bg) 70%);
+            font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+            color: var(--text);
+            user-select: none;
         }
 
         #map {
-            background-color: #7f7f7f;
-            cursor: pointer;
             position: absolute;
-            left: 0;
-            top: 0;
+            inset: 0;
             width: 100%;
             height: 100%;
+            cursor: crosshair;
         }
+
+        /* Subtle darkening of the screen edges */
+        #vignette {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            background: radial-gradient(ellipse at center,
+                    transparent 55%,
+                    rgba(0, 0, 0, 0.45) 100%);
+        }
+
+        /* ------------------------------------------------------------
+         * Info panel
+         * ------------------------------------------------------------ */
 
         #info {
             position: absolute;
-            left: 10px;
-            top: 10px;
-            padding: 12px 16px;
-            min-width: 220px;
-            background: rgba(0, 0, 0, 0.78);
-            color: white;
-            border-radius: 7px;
-            font-family: monospace;
-            line-height: 1.6;
+            top: 16px;
+            left: 16px;
+            width: 248px;
+            background: var(--panel-bg);
+            -webkit-backdrop-filter: blur(14px) saturate(140%);
+            backdrop-filter: blur(14px) saturate(140%);
+            border: 1px solid var(--panel-border);
+            border-radius: 14px;
+            box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5);
+            overflow: hidden;
         }
 
-        .title {
-            font-weight: bold;
+        .panel-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 16px;
+            background: rgba(255, 255, 255, 0.03);
+            border-bottom: 1px solid var(--panel-border);
+        }
+
+        .panel-title {
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--warn);
+            box-shadow: 0 0 8px var(--warn);
+            transition: background 0.25s, box-shadow 0.25s;
+        }
+
+        .status-dot.online {
+            background: var(--ok);
+            box-shadow: 0 0 8px var(--ok);
+        }
+
+        .status-dot.offline {
+            background: var(--err);
+            box-shadow: 0 0 8px var(--err);
+        }
+
+        .status-text {
+            margin-left: auto;
+            font-size: 10px;
+            letter-spacing: 0.1em;
+            color: var(--muted);
+        }
+
+        .panel-body {
+            padding: 12px 16px 14px;
+        }
+
+        .row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            padding: 3px 0;
+        }
+
+        .label {
+            font-size: 11px;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--muted);
+        }
+
+        .value {
+            font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+            font-size: 13px;
+            color: var(--text);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .unit {
+            margin-left: 4px;
+            font-size: 10px;
+            color: var(--muted);
+        }
+
+        .divider {
+            height: 1px;
+            background: var(--panel-border);
+            margin: 10px 0 8px;
+        }
+
+        .section-title {
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--muted);
             margin-bottom: 4px;
         }
 
-        .separator {
-            height: 1px;
-            background: rgba(255, 255, 255, 0.25);
-            margin: 8px 0;
-        }
+        /* ------------------------------------------------------------
+         * Controls
+         * ------------------------------------------------------------ */
 
         #controls {
             position: absolute;
-            right: 10px;
-            top: 10px;
+            top: 16px;
+            right: 16px;
             display: flex;
-            gap: 5px;
+            gap: 8px;
         }
 
         button {
-            padding: 8px 12px;
-            border: none;
-            border-radius: 5px;
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            padding: 9px 14px;
+            background: var(--panel-bg);
+            -webkit-backdrop-filter: blur(14px) saturate(140%);
+            backdrop-filter: blur(14px) saturate(140%);
+            border: 1px solid var(--panel-border);
+            border-radius: 10px;
+            color: var(--text);
+            font: 500 13px/1 "Inter", "Segoe UI", system-ui, sans-serif;
             cursor: pointer;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+            transition:
+                background 0.15s,
+                border-color 0.15s,
+                transform 0.1s,
+                box-shadow 0.15s;
         }
 
         button:hover {
-            background: #ddd;
+            background: rgba(38, 46, 58, 0.92);
+            border-color: var(--panel-border-hover);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+        }
+
+        button:active {
+            transform: translateY(1px);
+        }
+
+        button.primary {
+            color: var(--accent);
+            border-color: rgba(45, 212, 191, 0.35);
+            background: linear-gradient(180deg,
+                    rgba(45, 212, 191, 0.14),
+                    rgba(45, 212, 191, 0.06));
+        }
+
+        button.primary:hover {
+            background: linear-gradient(180deg,
+                    rgba(45, 212, 191, 0.22),
+                    rgba(45, 212, 191, 0.1));
+            border-color: rgba(45, 212, 191, 0.55);
+        }
+
+        button svg {
+            width: 15px;
+            height: 15px;
+            stroke: currentColor;
+            flex: none;
+        }
+
+        /* ------------------------------------------------------------
+         * Hint bar
+         * ------------------------------------------------------------ */
+
+        #hint {
+            position: absolute;
+            left: 50%;
+            bottom: 16px;
+            transform: translateX(-50%);
+            padding: 7px 16px;
+            background: rgba(16, 20, 27, 0.7);
+            -webkit-backdrop-filter: blur(10px);
+            backdrop-filter: blur(10px);
+            border: 1px solid var(--panel-border);
+            border-radius: 999px;
+            font-size: 11px;
+            letter-spacing: 0.03em;
+            color: var(--muted);
+            white-space: nowrap;
+            pointer-events: none;
+        }
+
+        #hint b {
+            color: #b9c3d0;
+            font-weight: 600;
+        }
+
+        @media (max-width: 720px) {
+            #controls button span {
+                display: none;
+            }
+
+            #controls button {
+                padding: 10px;
+            }
+
+            #hint {
+                display: none;
+            }
         }
     </style>
-
 </head>
 
 <body>
 
     <canvas id="map"></canvas>
 
+    <div id="vignette"></div>
+
     <div id="info">
-        <div class="title">
-            ROBOT
+        <div class="panel-header">
+            <span class="status-dot" id="status-dot"></span>
+            <span class="panel-title">Robot</span>
+            <span class="status-text" id="status-text">CONNECTING</span>
         </div>
 
-        <div>
-            X:
-            <span id="robot-x">---</span>
-            m
+        <div class="panel-body">
+            <div class="row">
+                <span class="label">X</span>
+                <span class="value"><span id="robot-x">---</span><span class="unit">m</span></span>
+            </div>
+
+            <div class="row">
+                <span class="label">Y</span>
+                <span class="value"><span id="robot-y">---</span><span class="unit">m</span></span>
+            </div>
+
+            <div class="row">
+                <span class="label">Heading</span>
+                <span class="value"><span id="robot-heading">---</span><span class="unit">°</span></span>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="section-title">Drive · DWA</div>
+
+            <div class="row">
+                <span class="label">Linear</span>
+                <span class="value"><span id="linear-velocity">---</span><span class="unit">m/s</span></span>
+            </div>
+
+            <div class="row">
+                <span class="label">Angular</span>
+                <span class="value"><span id="angular-velocity">---</span><span class="unit">rad/s</span></span>
+            </div>
         </div>
-
-        <div>
-            Y:
-            <span id="robot-y">---</span>
-            m
-        </div>
-
-        <div>
-            Heading:
-            <span id="robot-heading">---</span>
-            °
-        </div>
-
-        <div class="separator"></div>
-
-        <div class="title">
-            DAW
-        </div>
-
-        <div>
-            Linear:
-            <span id="linear-velocity">---</span>
-            m/s
-        </div>
-
-        <div>
-            Angular:
-            <span id="angular-velocity">---</span>
-            rad/s
-        </div>
-
     </div>
 
     <div id="controls">
-        <button onclick="centerRobot()">
-            Center robot
+        <button class="primary" onclick="centerRobot()" title="Center on robot">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round">
+                <circle cx="12" cy="12" r="7" />
+                <line x1="12" y1="1.5" x2="12" y2="5" />
+                <line x1="12" y1="19" x2="12" y2="22.5" />
+                <line x1="1.5" y1="12" x2="5" y2="12" />
+                <line x1="19" y1="12" x2="22.5" y2="12" />
+            </svg>
+            <span>Center</span>
         </button>
 
-        <button onclick="fitMap()">
-            Fit map
+        <button onclick="fitMap()" title="Fit the whole map on screen">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+                <path d="M16 3h3a2 2 0 0 1 2 2v3" />
+                <path d="M8 21H5a2 2 0 0 1-2-2v-3" />
+                <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+            </svg>
+            <span>Fit map</span>
         </button>
 
-        <button onclick="clearGoal()">
-            Clear goal
+        <button onclick="clearGoal()" title="Remove the current goal">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round">
+                <circle cx="12" cy="12" r="9" />
+                <line x1="9" y1="9" x2="15" y2="15" />
+                <line x1="15" y1="9" x2="9" y2="15" />
+            </svg>
+            <span>Clear goal</span>
         </button>
+    </div>
+
+    <div id="hint">
+        <b>Scroll</b> to zoom &nbsp;·&nbsp; <b>Middle-drag</b> to pan &nbsp;·&nbsp; <b>Click</b> to set goal
     </div>
 
     <script>
@@ -241,10 +454,11 @@
                 canvas.height
             );
 
-            if (!mapData || !mapImage)
-                return;
+            drawGrid();
 
-            drawMap();
+            if (mapData && mapImage)
+                drawMap();
+
             drawGlobalPath();
             drawGoal();
             drawTrajectory();
@@ -253,6 +467,191 @@
             drawRobot();
         }
 
+
+        /* ============================================================
+         * BACKGROUND GRID
+         * ============================================================ */
+
+        function drawGrid() {
+
+            /*
+             * Pick a "nice" grid spacing that stays
+             * readable at any zoom level.
+             */
+
+            let step = 1;
+            let guard = 0;
+
+            while (
+                step * camera.zoom < 48 &&
+                guard++ < 40
+            ) {
+                step *= 2;
+            }
+
+            guard = 0;
+
+            while (
+                step * camera.zoom > 160 &&
+                guard++ < 40
+            ) {
+                step /= 2;
+            }
+
+
+            const topLeft =
+                screenToWorld(0, 0);
+
+            const bottomRight =
+                screenToWorld(
+                    canvas.width,
+                    canvas.height
+                );
+
+
+            ctx.lineWidth = 1;
+
+            ctx.strokeStyle =
+                "rgba(255, 255, 255, 0.045)";
+
+            ctx.beginPath();
+
+
+            /* Vertical lines */
+
+            const startX =
+                Math.floor(topLeft.x / step) * step;
+
+            for (
+                let x = startX;
+                x <= bottomRight.x;
+                x += step
+            ) {
+                const sx =
+                    worldToScreen(x, 0).x;
+
+                ctx.moveTo(sx, 0);
+                ctx.lineTo(sx, canvas.height);
+            }
+
+
+            /* Horizontal lines */
+
+            const startY =
+                Math.floor(bottomRight.y / step) * step;
+
+            for (
+                let y = startY;
+                y <= topLeft.y;
+                y += step
+            ) {
+                const sy =
+                    worldToScreen(0, y).y;
+
+                ctx.moveTo(0, sy);
+                ctx.lineTo(canvas.width, sy);
+            }
+
+            ctx.stroke();
+
+
+            /* World origin axes */
+
+            const origin =
+                worldToScreen(0, 0);
+
+            ctx.strokeStyle =
+                "rgba(56, 189, 248, 0.14)";
+
+            ctx.beginPath();
+
+            ctx.moveTo(0, origin.y);
+            ctx.lineTo(canvas.width, origin.y);
+
+            ctx.moveTo(origin.x, 0);
+            ctx.lineTo(origin.x, canvas.height);
+
+            ctx.stroke();
+        }
+
+
+        /* ============================================================
+         * MAP IMAGE PROCESSING
+         *
+         * Robot map comes as RGB where:
+         *   (0, 0, 0)       -> wall
+         *   (127, 127, 127) -> unknown
+         *   (255, 255, 255) -> free
+         *
+         * We turn the unknown cells transparent so the
+         * grid background shows through.
+         * ============================================================ */
+
+        function processMapImage(img) {
+
+            const offscreen =
+                document.createElement("canvas");
+
+            offscreen.width =
+                img.naturalWidth;
+
+            offscreen.height =
+                img.naturalHeight;
+
+            const offCtx =
+                offscreen.getContext("2d", {
+                    willReadFrequently: true
+                });
+
+            offCtx.drawImage(img, 0, 0);
+
+            const imageData =
+                offCtx.getImageData(
+                    0,
+                    0,
+                    offscreen.width,
+                    offscreen.height
+                );
+
+            const data = imageData.data;
+
+            for (
+                let i = 0;
+                i < data.length;
+                i += 4
+            ) {
+
+                const r = data[i];
+                const g = data[i + 1];
+                const b = data[i + 2];
+
+                /*
+                 * ±2 tolerance guards against any
+                 * incidental rounding.
+                 */
+
+                if (
+                    Math.abs(r - 127) <= 2 &&
+                    Math.abs(g - 127) <= 2 &&
+                    Math.abs(b - 127) <= 2
+                ) {
+                    data[i + 3] = 0;
+                }
+            }
+
+            offCtx.putImageData(
+                imageData,
+                0,
+                0
+            );
+
+            return offscreen;
+        }
+
+
+        /* ============================================================
+         * MAP
+         * ============================================================ */
 
         function drawMap() {
 
@@ -303,20 +702,21 @@
              * The canvas Y axis points down,
              * while the world Y axis points up.
              *
-             * Therefore flip the map vertically.
+             * Therefore flip the map vertically
+             * and anchor it at the correct corner.
              */
 
-            // ctx.save();
+            ctx.save();
 
-            // ctx.translate(
-            //     x,
-            //     y + height
-            // );
+            ctx.translate(
+                x,
+                y + height
+            );
 
-            // ctx.scale(
-            //     1,
-            //     -1
-            // );
+            ctx.scale(
+                1,
+                -1
+            );
 
             ctx.drawImage(
                 mapImage,
@@ -326,8 +726,13 @@
                 height
             );
 
-            // ctx.restore();
+            ctx.restore();
         }
+
+
+        /* ============================================================
+         * GLOBAL PATH
+         * ============================================================ */
 
         function drawGlobalPath() {
 
@@ -375,12 +780,26 @@
 
 
             ctx.lineWidth = 3;
+            ctx.lineJoin = "round";
+            ctx.lineCap = "round";
 
             ctx.strokeStyle =
                 "#00aaff";
 
+            ctx.shadowColor =
+                "rgba(0, 170, 255, 0.75)";
+
+            ctx.shadowBlur = 8;
+
             ctx.stroke();
+
+            ctx.shadowBlur = 0;
         }
+
+
+        /* ============================================================
+         * ROBOT
+         * ============================================================ */
 
         function drawRobot() {
 
@@ -409,6 +828,44 @@
 
 
             /*
+             * Soft glow around the robot.
+             */
+
+            const glow =
+                ctx.createRadialGradient(
+                    0,
+                    0,
+                    radius * 0.4,
+                    0,
+                    0,
+                    radius * 1.9
+                );
+
+            glow.addColorStop(
+                0,
+                "rgba(255, 80, 80, 0.22)"
+            );
+
+            glow.addColorStop(
+                1,
+                "rgba(255, 80, 80, 0)"
+            );
+
+            ctx.beginPath();
+
+            ctx.arc(
+                0,
+                0,
+                radius * 1.9,
+                0,
+                Math.PI * 2
+            );
+
+            ctx.fillStyle = glow;
+            ctx.fill();
+
+
+            /*
              * Robot heading.
              *
              * Canvas Y points downward,
@@ -424,6 +881,19 @@
              * Robot body
              */
 
+            const body =
+                ctx.createRadialGradient(
+                    -radius * 0.3,
+                    -radius * 0.3,
+                    radius * 0.15,
+                    0,
+                    0,
+                    radius
+                );
+
+            body.addColorStop(0, "#ff7a7a");
+            body.addColorStop(1, "#d61f1f");
+
             ctx.beginPath();
 
             ctx.arc(
@@ -434,10 +904,14 @@
                 Math.PI * 2
             );
 
-            ctx.fillStyle =
-                "#ff4444";
-
+            ctx.fillStyle = body;
             ctx.fill();
+
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle =
+                "rgba(255, 255, 255, 0.65)";
+
+            ctx.stroke();
 
 
             /*
@@ -460,6 +934,7 @@
                 "#ffffff";
 
             ctx.lineWidth = 3;
+            ctx.lineCap = "round";
 
             ctx.stroke();
 
@@ -496,6 +971,11 @@
             ctx.restore();
         }
 
+
+        /* ============================================================
+         * GOAL
+         * ============================================================ */
+
         function drawGoal() {
 
             if (!goal)
@@ -509,8 +989,38 @@
                 );
 
 
-            const size = 10;
+            const size = 8;
 
+
+            ctx.save();
+
+            ctx.strokeStyle =
+                "#ffcc00";
+
+            ctx.shadowColor =
+                "rgba(255, 204, 0, 0.8)";
+
+            ctx.shadowBlur = 10;
+
+
+            /* Outer ring */
+
+            ctx.beginPath();
+
+            ctx.arc(
+                p.x,
+                p.y,
+                size,
+                0,
+                Math.PI * 2
+            );
+
+            ctx.lineWidth = 2.5;
+
+            ctx.stroke();
+
+
+            /* Cross */
 
             ctx.beginPath();
 
@@ -534,14 +1044,18 @@
                 p.y + size
             );
 
-
-            ctx.strokeStyle =
-                "#ffcc00";
-
-            ctx.lineWidth = 3;
+            ctx.lineWidth = 2.5;
 
             ctx.stroke();
+
+
+            ctx.restore();
         }
+
+
+        /* ============================================================
+         * ANGULAR VELOCITY INDICATOR
+         * ============================================================ */
 
         function drawAngularVelocity() {
             if (!robot || !cmdvel)
@@ -618,11 +1132,21 @@
 
             ctx.lineWidth = 4;
 
+            ctx.shadowColor =
+                "rgba(255, 204, 0, 0.6)";
+
+            ctx.shadowBlur = 8;
+
             ctx.stroke();
 
 
             ctx.restore();
         }
+
+
+        /* ============================================================
+         * LINEAR VELOCITY VECTOR
+         * ============================================================ */
 
         function drawVelocityVector() {
 
@@ -698,6 +1222,12 @@
                 "#00ff88";
 
             ctx.lineWidth = 4;
+            ctx.lineCap = "round";
+
+            ctx.shadowColor =
+                "rgba(0, 255, 136, 0.65)";
+
+            ctx.shadowBlur = 8;
 
             ctx.stroke();
 
@@ -737,8 +1267,14 @@
             );
 
             ctx.stroke();
+
             ctx.restore();
         }
+
+
+        /* ============================================================
+         * PREDICTED TRAJECTORY
+         * ============================================================ */
 
         function drawTrajectory(dt = 0.2, time = 2) {
             if (!robot || !cmdvel)
@@ -748,11 +1284,15 @@
             let v = cmdvel.linear, w = cmdvel.angular;
             const start = worldToScreen(cx, cy);
 
-            ctx.strokeStyle = "#DD661A"
-            ctx.lineWidth = 3;
+            ctx.save();
 
-            ctx.beginPath()
-            ctx.moveTo(start.x, start.y)
+            ctx.strokeStyle = "rgba(255, 140, 60, 0.85)";
+            ctx.lineWidth = 3;
+            ctx.lineCap = "round";
+            ctx.lineJoin = "round";
+
+            ctx.beginPath();
+            ctx.moveTo(start.x, start.y);
 
             for (let i = 0; i < Math.ceil(time / dt); i++) {
                 let s = v * dt;
@@ -766,7 +1306,14 @@
             }
 
             ctx.stroke();
+
+            ctx.restore();
         }
+
+
+        /* ============================================================
+         * CLICK -> SET GOAL
+         * ============================================================ */
 
         canvas.addEventListener(
             "click",
@@ -919,6 +1466,7 @@
             draw();
         }
 
+
         /* ============================================================
          * ZOOM
          * ============================================================ */
@@ -1064,36 +1612,44 @@
          * WEBSOCKET
          * ============================================================ */
 
+        const statusDot =
+            document.getElementById("status-dot");
+
+        const statusText =
+            document.getElementById("status-text");
+
+        function setStatus(state, label) {
+
+            statusDot.className =
+                "status-dot" +
+                (state ? " " + state : "");
+
+            statusText.textContent = label;
+        }
+
+
         const socket =
             new WebSocket(
                 `ws://${location.host}/ws`
             );
 
 
-        // socket.onopen = () => {
-        //     document.getElementById(
-        //         "info"S
-        //     ).textContent =
-        //         "Connected";
-        // };
+        socket.onopen = () => {
+
+            setStatus("online", "ONLINE");
+        };
 
 
-        // socket.onclose = () => {
+        socket.onclose = () => {
 
-        //     document.getElementById(
-        //         "info"
-        //     ).textContent =
-        //         "Disconnected";
-        // };
+            setStatus("offline", "OFFLINE");
+        };
 
 
-        // socket.onerror = () => {
+        socket.onerror = () => {
 
-        //     document.getElementById(
-        //         "info"
-        //     ).textContent =
-        //         "WebSocket error";
-        // };
+            setStatus("offline", "ERROR");
+        };
 
 
         socket.onmessage = event => {
@@ -1112,9 +1668,21 @@
             if (message.type === "map") {
                 mapData =
                     message.map;
-                mapImage =
+
+                const img =
                     new Image();
-                mapImage.onload = () => {
+
+                img.onload = () => {
+
+                    /*
+                     * Turn unknown cells transparent,
+                     * then use the processed canvas
+                     * as the render source.
+                     */
+
+                    mapImage =
+                        processMapImage(img);
+
 
                     /*
                      * First map received.
@@ -1132,7 +1700,8 @@
 
                     draw();
                 };
-                mapImage.src =
+
+                img.src =
                     "data:image/png;base64," +
                     mapData.image;
             }
