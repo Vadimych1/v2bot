@@ -46,7 +46,6 @@ class MotionControllerConfig:
         self.goal_tolerance = get_config("motion_controller.goal_tolerance")
         self.lookahead_distance = get_config("motion_controller.lookahead_distance")
 
-
 class MotionController(AsyncROSClient):
     """
     Motion controller node for vbot
@@ -74,22 +73,16 @@ class MotionController(AsyncROSClient):
 
         self.config = config
 
-        # grid map retrieved from slam
-        self.grid = None
-        self.obstacle_distance_map = None
-
-        # map size in pixels
-        self.width = 0
-        self.height = 0
-
-        # (0, 0) offset on map
-        # in pixels
-        self.offset_x = 0
-        self.offset_y = 0
-
-        # map resolution (meters per pixel)
-        self.resolution = 1
-
+        self._map_snapshot = {
+            "grid": None,
+            "width": 0,
+            "height": 0,
+            "offset_x": 0,
+            "offset_y": 0,
+            "resolution": 1,
+            "obstacle_distance_map": None,
+        }
+        
         # current pose, meters and radians
         self.robot_x = 0.0
         self.robot_y = 0.0
@@ -111,48 +104,47 @@ class MotionController(AsyncROSClient):
 
         self._last_map_ts = -1
         self._last_odom_ts = -1
+        
+        self._last_cmd_time = time.monotonic()
 
-    def _world_to_pixel(self, wx: float, wy: float):
-        px = math.floor(wx / self.resolution + self.offset_x)
-        py = math.floor(wy / self.resolution + self.offset_y)
+    def _world_to_pixel(self, wx: float, wy: float, resolution, of_x, of_y):
+        px = math.floor(wx / resolution + of_x)
+        py = math.floor(wy / resolution + of_y)
 
         return px, py
 
-    def _is_collision(self, x: float, y: float):
-        if self.obstacle_distance_map is None:
+    def _is_collision(self, x: float, y: float, obstacle_distance_map, resolution, of_x, of_y, width, height):
+        if obstacle_distance_map is None:
             return False
 
-        clearance = self._get_obstacle_distance(x, y)
+        clearance = self._get_obstacle_distance(x, y, resolution, of_x, of_y, width, height, obstacle_distance_map)
         return clearance <= self.config.robot_radius
 
-    def _find_closest_path_idx(self):
-        if self.global_path is None:
+    def _find_closest_path_idx(self, path, robot_x, robot_y):
+        if path is None:
             return 0
 
         min_dist = float("inf")
         idx = 0
-        for i, (px, py) in enumerate(self.global_path):
-            d = np.hypot(px - self.robot_x, py - self.robot_y)
+        for i, (px, py) in enumerate(path):
+            d = math.hypot(px - robot_x, py - robot_y)
             if d < min_dist:
                 min_dist = d
                 idx = i
 
         return idx
 
-    def _get_target_point(self):
-        if self.global_path is None:
-            return (self.robot_x, self.robot_y)
-
-        if self.target_idx >= len(self.global_path):
-            self.target_idx = len(self.global_path) - 1
+    def _get_target_point(self, path, target_idx, x, y):
+        if path is None or len(path) == 0:
+            return x, y
 
         cumulative_dist = 0.0
-        idx = self.target_idx
-        while idx < len(self.global_path) - 1:
-            px, py = self.global_path[idx]
-            nx, ny = self.global_path[idx + 1]
+        idx = target_idx
+        while idx < len(path) - 1:
+            px, py = path[idx]
+            nx, ny = path[idx + 1]
 
-            seg_dist = np.hypot(nx - px, ny - py)
+            seg_dist = math.hypot(nx - px, ny - py)
 
             if cumulative_dist + seg_dist >= self.config.lookahead_distance:
                 frac = (
@@ -168,58 +160,61 @@ class MotionController(AsyncROSClient):
 
             cumulative_dist += seg_dist
             idx += 1
+            
+        return tuple(path[-1])
 
-        if self.global_path is None or len(self.global_path) == 0:
-            return (self.robot_x, self.robot_y)
-
-        return self.global_path[-1]
-
-    def _simulate_trajectory(self, v: float, w: float):
+    def _simulate_trajectory(self, v: float, w: float, x, y, theta):
         states = []
-        x, y, theta = self.robot_x, self.robot_y, self.robot_heading
-
-        for _ in range(int(self.config.predict_time / self.config.dt)):
-            x += v * np.cos(theta) * self.config.dt
-            y += v * np.sin(theta) * self.config.dt
+        steps = max(1, round(self.config.predict_time / self.config.dt))
+        for _ in range(steps):
+            x += v * math.cos(theta) * self.config.dt
+            y += v * math.sin(theta) * self.config.dt
             theta += w * self.config.dt
 
             states.append((x, y, theta))
 
         return states
 
-    def _get_obstacle_distance(self, x: float, y: float):
-        if self.obstacle_distance_map is None:
+    def _get_obstacle_distance(self, x: float, y: float, resolution, of_x, of_y, width, height, obstacle_distance_map):
+        if obstacle_distance_map is None:
             return 0.0
 
-        px, py = self._world_to_pixel(x, y)
+        px, py = self._world_to_pixel(x, y, resolution, of_x, of_y)
 
         # Outside the map is considered a collision.
-        if px < 0 or px >= self.width or py < 0 or py >= self.height:
+        if px < 0 or px >= width or py < 0 or py >= height:
             return 0.0
 
-        return self.obstacle_distance_map[py, px]
+        return obstacle_distance_map[py, px]
 
     def _evaluate_trajectory(
-        self, states: list[tuple[float, float, float]], v: float, w: float
+        self, 
+        states: list[tuple[float, float, float]], 
+        target, 
+        v: float, 
+        obstacle_distance_map, 
+        resolution, 
+        of_x, 
+        of_y, 
+        width, 
+        height
     ):
         if (
-            self.global_path is None
-            or len(states) <= 0
-            or self.grid is None
-            or self.obstacle_distance_map is None
+            len(states) <= 0
+            or obstacle_distance_map is None
         ):
             return float("inf")
 
         for x, y, _ in states:
-            if self._is_collision(x, y):
+            if self._is_collision(x, y, obstacle_distance_map, resolution, of_x, of_y, width, height):
                 return float("inf")
 
-        target_x, target_y = self._get_target_point()
+        target_x, target_y = target
         dx = target_x - states[-1][0]
         dy = target_y - states[-1][1]
 
         ### Heading cost
-        angle_to_target = np.atan2(dy, dx)
+        angle_to_target = math.atan2(dy, dx)
         
         if v >= 0:
             movement_heading = states[-1][2]
@@ -231,14 +226,14 @@ class MotionController(AsyncROSClient):
         heading_cost = self.config.weight_heading * heading_error
 
         ### Progress reward
-        start_dist = np.hypot(self.robot_x - target_x, self.robot_y - target_y)
-        end_dist = np.hypot(states[-1][0] - target_x, states[-1][1] - target_y)
+        start_dist = math.hypot(self.robot_x - target_x, self.robot_y - target_y)
+        end_dist = math.hypot(states[-1][0] - target_x, states[-1][1] - target_y)
         
         progress = start_dist - end_dist
         progress_cost = -self.config.weight_progress * progress
         
         ### Distance cost
-        dist_to_target = np.hypot(states[-1][0] - target_x, states[-1][1] - target_y)
+        dist_to_target = math.hypot(states[-1][0] - target_x, states[-1][1] - target_y)
         dist_cost = self.config.weight_dist * (
             dist_to_target / (self.config.lookahead_distance + 1.0)
         )
@@ -246,7 +241,11 @@ class MotionController(AsyncROSClient):
         ### Speed cost
         speed_cost = -self.config.weight_speed * (v if v >= 0 else -v * 0.9)
 
-        ### Obstacle cost
+        if 0 < v < 0.1:
+            t = abs(v) / 0.1
+            speed_cost += (1.0 - t) * (1.0 - t) * 0.1
+
+        # obstacle cost
         safety_margin = self.config.robot_radius
         influence_distance = (
             self.config.robot_radius + 0.05
@@ -261,12 +260,10 @@ class MotionController(AsyncROSClient):
             stationary_penalty = 0.0
 
         for i, (x, y, _) in enumerate(states):
-            clearance = self._get_obstacle_distance(x, y)
+            if i % 2 == 1:
+                continue
 
-            if clearance < safety_margin:
-                obstacle_cost = float("inf")
-                break
-
+            clearance = self._get_obstacle_distance(x, y, resolution, of_x, of_y, width, height, obstacle_distance_map)
             if clearance > influence_distance:
                 continue
 
@@ -281,19 +278,30 @@ class MotionController(AsyncROSClient):
         return heading_cost + dist_cost + speed_cost + obstacle_cost + progress_cost + stationary_penalty
 
     def _normalize_angle(self, angle: float):
-        while angle > np.pi:
-            angle -= 2.0 * np.pi
+        while angle > math.pi:
+            angle -= 2.0 * math.pi
 
-        while angle < -np.pi:
-            angle += 2.0 * np.pi
+        while angle < -math.pi:
+            angle += 2.0 * math.pi
 
         return angle
 
     def compute_control(self):
-        grid = self.grid
+        snap = self._map_snapshot
+        
+        grid = snap["grid"]
+        obstacle_distance_map = snap["obstacle_distance_map"]
+        width = snap["width"]
+        height = snap["height"]
+        resolution = snap["resolution"]
+        of_x = snap["offset_x"]
+        of_y = snap["offset_y"]
+        
         path = self.global_path
+        
         x = self.robot_x
         y = self.robot_y
+        theta = self.robot_heading
         v = self.current_v
         w = self.current_w
 
@@ -302,38 +310,42 @@ class MotionController(AsyncROSClient):
 
         # if we are close to the target
         last_x, last_y = path[-1]
-        if np.hypot(x - last_x, y - last_y) < self.config.goal_tolerance:
+        if math.hypot(x - last_x, y - last_y) < self.config.goal_tolerance:
             return 0.0, 0.0
 
         if self.target_idx < len(path) - 1:
-            closest_idx = self._find_closest_path_idx()
+            closest_idx = self._find_closest_path_idx(path, x, y)
 
             if closest_idx > self.target_idx:
                 self.target_idx = closest_idx
 
             target_x, target_y = path[self.target_idx]
 
-            if np.hypot(target_x - x, target_y - y) < self.config.goal_tolerance:
+            if math.hypot(target_x - x, target_y - y) < self.config.goal_tolerance:
                 self.target_idx += 1
                 if self.target_idx >= len(path):
-                    self.target_idx = len(path)
+                    self.target_idx = len(path) - 1
 
+        now = time.monotonic()
+        control_dt = min(0.5, max(1e-3, now - self._last_cmd_time))
+        self._last_cmd_time = now
+        
         v_min = max(
             self.config.min_linear_speed,
-            v - self.config.max_linear_accel * self.config.dt,
+            v - self.config.max_linear_accel * control_dt,
         )
         v_max = min(
             self.config.max_linear_speed,
-            v + self.config.max_linear_accel * self.config.dt,
+            v + self.config.max_linear_accel * control_dt,
         )
 
         w_min = max(
             -self.config.max_angular_speed,
-            w - self.config.max_angular_accel * self.config.dt,
+            w - self.config.max_angular_accel * control_dt,
         )
         w_max = min(
             self.config.max_angular_speed,
-            w + self.config.max_angular_accel * self.config.dt,
+            w + self.config.max_angular_accel * control_dt,
         )
 
         v_samples = np.linspace(v_min, v_max, self.config.num_v_samples)
@@ -344,10 +356,11 @@ class MotionController(AsyncROSClient):
         best_w = 0.0
         # best_trajectory = None
 
+        target = self._get_target_point(path, self.target_idx, x, y)
         for v in v_samples:
             for w in w_samples:
-                states = self._simulate_trajectory(v, w)
-                cost = self._evaluate_trajectory(states, v, w)
+                states = self._simulate_trajectory(v, w, x, y, theta)
+                cost = self._evaluate_trajectory(states, target, v, grid, obstacle_distance_map, resolution, of_x, of_y, width, height)
 
                 if cost < best_cost:
                     best_cost = cost
@@ -362,23 +375,21 @@ class MotionController(AsyncROSClient):
 
     @aparsedata(SLAMOffsetMap)
     async def on_slam_map(self, map):  # SLAMOffsetMap
-        self.grid = map.grid
-        self.width = map.width
-        self.height = map.height
-        self.offset_x = map.offset_x
-        self.offset_y = map.offset_y
-        self.resolution = map.resolution
-
-        # apply euclidian distance transform
-        obstacles = self.grid < self._obstacle_upper_threshold
+        obstacles = map.grid < self._obstacle_upper_threshold
         euc = distance_transform_edt(~obstacles)
+        if euc is not None:
+            euc = euc * map.resolution
 
-        if euc is None:
-            return
-
-        self.obstacle_distance_map = euc
-        self.obstacle_distance_map *= self.resolution  # convert px to meters
-
+        # single atomic swap
+        self._map_snapshot = {
+            "grid": map.grid,
+            "width": map.width,
+            "height": map.height,
+            "offset_x": map.offset_x,
+            "offset_y": map.offset_y,
+            "resolution": map.resolution,
+            "obstacle_distance_map": euc,
+        }
         self._last_map_ts = time.time()
 
     @aparsedata(TimedMovement3DoF)
@@ -427,17 +438,22 @@ async def main():
         await client.wait()
 
         cmdvel_topic = await client.topic("cmdvel", Vector)
+        map_max_age = get_config("motion_controller.map_max_age")
+        odom_max_age = get_config("motion_controller.odometry_max_age")
 
+        loop = asyncio.get_running_loop()
+        next_tick = loop.time()
         while True:
-            await asyncio.sleep(cmdvel_post_delay)
+            next_tick += cmdvel_post_delay
+            delay = next_tick - loop.time()
+            
+            if delay > 0:
+                await asyncio.sleep(delay)
+            else:
+                next_tick = loop.time()
+            
             ts = time.time()
-
-            if ts - client._last_odom_ts >= get_config(
-                "motion_controller.odometry_max_age"
-            ) or ts - client._last_map_ts >= get_config(
-                "motion_controller.map_max_age"
-            ):
-                print("Max age:", ts - client._last_odom_ts, ts - client._last_map_ts)
+            if ts - client._last_odom_ts >= odom_max_age or ts - client._last_map_ts >= map_max_age:
                 await cmdvel_topic.post(Vector(0, 0, 0))
                 continue
 
