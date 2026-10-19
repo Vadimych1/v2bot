@@ -84,7 +84,10 @@
             "max_iter": 2000,
             "step_size_px": 6.0,
             "goal_tolerance_px": 7.0,
-            "search_radius_factor": 1.0
+            "search_radius_factor": 1.0,
+            "rrt_star_gamma": 50.0,
+            "rrt_star_radius_floor": 1.5,
+            "rrt_star_radius_cap": 8.0
         },
         "miniros": {
             "rebuild_check_time": 0.1,
@@ -132,8 +135,8 @@
         },
         "goal_tolerance": 0.2,
         "lookahead_distance": 0.6,
-        "odometry_max_age": 0.2,
-        "map_max_age": 1
+        "odometry_max_age": 0.6,
+        "map_max_age": 2
     },
     "lidar": {
         "win_port": "COM3",

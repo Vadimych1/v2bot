@@ -25,9 +25,7 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
     nq = 0
     nq_start_time = time.time()
 
-    while True:
-        nq += 1
-        
+    while True:        
         try:
             scan = input_queue.get(timeout=1)
 
@@ -39,6 +37,12 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
 
         except Empty:
             continue
+
+        nq += 1
+        
+        if (nq + 1) % 100 == 0:
+            nq_start_time = time.time()
+            nq = 0
 
         odometry_pose: datatypes.Vector = scan.pos
         angles = np.asarray(scan.angles)
@@ -62,11 +66,11 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
         pose, closed = mapper.process_scan(data)
         
         if pose is None:
-            print("skipped scan")
+            print("skipped scan", flush=True)
             continue
         
         if closed:
-            print("successful loop closure")
+            print("successful loop closure", flush=True)
 
         movement_msg = TimedMovement3DoF(
             movement=Movement3DoF(
@@ -79,7 +83,7 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
         mmap_data = None
         
         if nq % 30 == 0:
-            print(f"Running at {nq / (time.time() - nq_start_time)}Hz")
+            print(f"Running at {nq / (time.time() - nq_start_time)}Hz", flush=True)
 
         if map_counter % 3 == 0:
             grid = mapper.create_occupancy_grid(occupied_threshold)
@@ -109,11 +113,14 @@ class SLAMClient(AsyncROSClient):
         self.scan_queue = mp.Queue(get_config("vgslam.miniros.scan_queue_len"))
         self.result_queue = mp.Queue()
 
-        self.last_pos: datatypes.Movement | None = None
-        self.last_map: tuple | None = None
+        self.last_pos: bytes | None = None
+        self.last_map: bytes | None = None
 
         self.running = asyncio.Event()
         self.slam_proc = None
+        
+        self._pos_version = 0
+        self._map_version = 0
 
     def start_slam_process(self):
         self.running.set()
@@ -130,11 +137,15 @@ class SLAMClient(AsyncROSClient):
                 movement_data, mmap_data = res
 
                 self.last_pos = movement_data
+                self._pos_version += 1
+                
                 if mmap_data is not None:
                     self.last_map = mmap_data
+                    
+                    self._map_version += 1
 
             except Empty:
-                await asyncio.sleep(0.01)
+                continue
 
     # we are passing raw bytes to slam process for efficiency
     async def on_lidar_lidar(self, data):
@@ -187,11 +198,16 @@ async def main():
 
         map_topic = await client.topic("map", datatypes.Bytes)
 
+        last_seen_map = -1
+        last_seen_pos = -1
         while client.running.is_set():
-            if client.last_map is not None:
+            if client.last_map is not None and last_seen_map != client._map_version:
+                last_seen_map = client._map_version
                 await map_topic.post(client.last_map)
 
-            await asyncio.sleep(map_post_delay)
+            if last_seen_pos != client._pos_version:
+                last_seen_pos = client._pos_version
+                await asyncio.sleep(map_post_delay)
 
     async def run():
         await client.wait()
