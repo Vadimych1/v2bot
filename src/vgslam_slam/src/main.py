@@ -4,7 +4,7 @@ import multiprocessing as mp
 
 import time
 from miniros_configurator import get_config
-from miniros import AsyncROSClient, datatypes
+from miniros import AsyncROSClient, datatypes, aparsedata
 from miniros_slam.source.datatypes import SLAMOffsetMap
 from miniros.util.datatypes import Movement3DoF, TimedMovement3DoF
 
@@ -35,14 +35,13 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
             if scan is None:
                 break
 
-            scan = datatypes.Lidar2D.decode(scan)
+            x, y, theta, distances, angles = scan
 
         except Empty:
             continue
 
-        odometry_pose: datatypes.Vector = scan.pos
-        angles = np.asarray(scan.angles)
-        distances = np.asarray(scan.distances)
+        print("processing")
+        
         pcl = scan_to_cloud(
             distances,
             angles,
@@ -51,15 +50,11 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
         
         data = PositionedCloud(
             pcl,
-            np.array([
-                odometry_pose.x,
-                odometry_pose.y,
-                odometry_pose.z,
-            ]),
+            np.array([x, y, theta]),
             resolution=voxel_resolution,
         )
 
-        pose, closed = mapper.process_scan(data)
+        pose, closed = mapper.process_scan(data) # this takes ~1.2e-4 seconds to process in average on RPi5
         
         if pose is None:
             print("skipped scan")
@@ -83,6 +78,7 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
 
         if map_counter % 3 == 0:
             grid = mapper.create_occupancy_grid(occupied_threshold)
+            
             mmap_data = SLAMOffsetMap(
                 grid=grid.grid,
                 width=grid.width,
@@ -96,6 +92,30 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
 
         map_counter += 1
         output_queue.put((TimedMovement3DoF.encode(movement_msg), mmap_data))
+
+
+class FixedSizeList(list):
+    def __init__(self, maxlen, iterable=()):
+        self.maxlen = maxlen
+        super().__init__(iterable)
+        
+        if len(self) > maxlen:
+            del self[: len(self) - maxlen]
+
+    def append(self, item):
+        super().append(item)
+        if len(self) > self.maxlen:
+            self.pop(0)
+
+    def insert(self, index, item):
+        super().insert(index, item)
+        if len(self) > self.maxlen:
+            self.pop(0)
+
+    def extend(self, iterable):
+        super().extend(iterable)
+        while len(self) > self.maxlen:
+            self.pop(0)
 
 
 class SLAMClient(AsyncROSClient):
@@ -114,6 +134,9 @@ class SLAMClient(AsyncROSClient):
 
         self.running = asyncio.Event()
         self.slam_proc = None
+        
+        self._odometry_event = asyncio.Event()
+        self._odometry = FixedSizeList(10)
 
     def start_slam_process(self):
         self.running.set()
@@ -136,8 +159,10 @@ class SLAMClient(AsyncROSClient):
             except Empty:
                 await asyncio.sleep(0.01)
 
-    # we are passing raw bytes to slam process for efficiency
+    @aparsedata(datatypes.Lidar2D)
     async def on_lidar_lidar(self, data):
+        print("got lidar")
+        
         if self.scan_queue.full():
             try:
                 self.scan_queue.get_nowait()
@@ -146,12 +171,74 @@ class SLAMClient(AsyncROSClient):
                 pass
 
         try:
-            self.scan_queue.put_nowait(data)
+            mov = await self.wait_for_odometry_at(data.timestamp, max_retries=3)
+            
+            if mov is None:
+                print("ts None")
+                return
+
+            self.scan_queue.put_nowait((
+                mov.x,
+                mov.y,
+                mov.theta,
+                data.distances,
+                data.angles,
+            ))
 
         except Exception:
             pass
 
-        # await self.anon("lidar", "ping", b"hi")
+    @aparsedata(TimedMovement3DoF)
+    async def on_motorcontroller_odometry(self, data):
+        self._odometry.append(data)
+        self._odometry_event.set()
+    
+    async def wait_for_odometry_at(self, ts: float, max_retries: int = 2):        
+            for i, odom in enumerate(self._odometry):
+                if odom.timestamp >= ts:
+                    if i > 0:
+                        prev_odom = self._odometry[i - 1]
+                        return self._interpolate(odom, prev_odom, ts)
+    
+                    else:
+                        return self._odometry[0]
+    
+            self._odometry_event.clear()
+    
+            for _ in range(max_retries):
+                await self._odometry_event.wait()
+                self._odometry_event.clear()
+    
+                if self._odometry[-1].timestamp >= ts:
+                    return self._interpolate(
+                        self._odometry[-1], self._odometry[-2], ts
+                    )
+    
+            return None
+
+    def _normalize_angle(self, angle):
+        while angle > np.pi:
+            angle -= 2 * np.pi
+
+        while angle < -np.pi:
+            angle += 2 * np.pi
+
+        return angle
+    
+    def _interpolate(self, odom, prev_odom, timestamp):
+        mov = odom.movement
+        prev_mov = prev_odom.movement
+
+        alpha = (timestamp - prev_odom.timestamp) / (odom.timestamp - prev_odom.timestamp)
+        x = prev_mov.x + alpha * (mov.x - prev_mov.x)
+        y = prev_mov.y + alpha * (mov.y - prev_mov.y)
+        theta = prev_mov.theta + alpha * (mov.theta - prev_mov.theta)
+
+        return Movement3DoF(
+            x=x,
+            y=y,
+            theta=self._normalize_angle(theta),
+        )
 
     def stop(self):
         self.running.clear()
