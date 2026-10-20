@@ -108,28 +108,28 @@ async def main():
                         continue
 
                     last_seen_odometry = version                
-                    x, y, t, v, w = odom
+                    x, y, theta, v, w = odom
 
                     # logging to check odometry consistency
                     t = time.monotonic()
                     f.write(f"{t - prev}\n")
                     prev = t
 
-                await odometry_topic.post(
-                    datatypes.TimedMovement3DoF(
-                        timestamp=time.time(),
-                        movement=datatypes.Movement3DoF(
-                            x=x,
-                            y=y,
-                            theta=-t,
-                        ),
+                    await odometry_topic.post(
+                        datatypes.TimedMovement3DoF(
+                            timestamp=time.time(),
+                            movement=datatypes.Movement3DoF(
+                                x=x,
+                                y=y,
+                                theta=-theta,
+                            ),
+                        )
                     )
-                )
-                await speeds_topic.post(datatypes.Vector(v, w, 0))
+                    await speeds_topic.post(datatypes.Vector(v, w, 0))
             
-            await asyncio.sleep(odometry_post_delay)
+                await asyncio.sleep(odometry_post_delay)
 
-            await client.stop()
+        await client.stop()
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)

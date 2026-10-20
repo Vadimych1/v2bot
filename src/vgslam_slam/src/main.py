@@ -12,8 +12,6 @@ import numpy as np
 from vgslam import VGSLAM, PositionedCloud, scan_to_cloud
 
 def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
-    print("started", flush=True)
-    
     map_counter = 0
     
     map_resolution = get_config("vgslam.map_resolution")
@@ -34,7 +32,6 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
 
                 # shutdown signal
                 if scan is None:
-                    print("SHUTDOWN")
                     break
 
                 x, y, theta, distances, angles = scan
@@ -42,7 +39,6 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
             except Empty:
                 continue
 
-            print("got scan", flush=True)
             nq += 1
             
             if (nq + 1) % 100 == 0:
@@ -181,7 +177,10 @@ class SLAMClient(AsyncROSClient):
                 self._map_version += 1
 
     @aparsedata(datatypes.Lidar2D)
-    async def on_lidar_lidar(self, data):        
+    async def on_lidar_lidar(self, data):
+        asyncio.create_task(self._lidar_handler(data))
+    
+    async def _lidar_handler(self, data):
         if self.scan_queue.full():
             try:
                 self.scan_queue.get_nowait()
@@ -193,7 +192,6 @@ class SLAMClient(AsyncROSClient):
             mov = await self.wait_for_odometry_at(data.timestamp, max_retries=3)
             
             if mov is None:
-                print("ts None")
                 return
 
             self.scan_queue.put_nowait((
@@ -234,7 +232,6 @@ class SLAMClient(AsyncROSClient):
                 self._odometry_event.clear()
             
             except TimeoutError:
-                print("ODOMETRY TIMEOUT")
                 continue
             
             if not self._odometry:

@@ -74,8 +74,8 @@ class LidarClient(AsyncROSClient):
         self.lidar_proc.start()
     
     def get_nowait_bytes(self):
-        if self.child_conn.poll(0):
-            return self.child_conn.recv_bytes()
+        if self.parent_conn.poll(0):
+            return self.parent_conn.recv_bytes()
         
         raise Empty
     
