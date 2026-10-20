@@ -106,6 +106,8 @@ class MotionController(AsyncROSClient):
         self._last_odom_ts = -1
         
         self._last_cmd_time = time.monotonic()
+        
+        self._edt_busy = False
 
     def _world_to_pixel(self, wx: float, wy: float, resolution, of_x, of_y):
         px = math.floor(wx / resolution + of_x)
@@ -279,13 +281,7 @@ class MotionController(AsyncROSClient):
         return heading_cost + dist_cost + speed_cost + obstacle_cost + progress_cost + stationary_penalty
 
     def _normalize_angle(self, angle: float):
-        while angle > math.pi:
-            angle -= 2.0 * math.pi
-
-        while angle < -math.pi:
-            angle += 2.0 * math.pi
-
-        return angle
+        return (angle + math.pi) % (2 * math.pi) - math.pi
 
     def compute_control(self):
         snap = self._map_snapshot
@@ -376,22 +372,30 @@ class MotionController(AsyncROSClient):
 
     @aparsedata(SLAMOffsetMap)
     async def on_slam_map(self, map):  # SLAMOffsetMap
-        obstacles = map.grid < self._obstacle_upper_threshold
-        euc = distance_transform_edt(~obstacles)
-        if euc is not None:
-            euc = euc * map.resolution
+        if self._edt_busy:
+            return
+        
+        self._edt_busy = True
+        
+        try:
+            obstacles = map.grid < self._obstacle_upper_threshold
+            euc = await asyncio.to_thread(distance_transform_edt, ~obstacles)            
+            euc *= map.resolution
 
-        # single atomic swap
-        self._map_snapshot = {
-            "grid": map.grid,
-            "width": map.width,
-            "height": map.height,
-            "offset_x": map.offset_x,
-            "offset_y": map.offset_y,
-            "resolution": map.resolution,
-            "obstacle_distance_map": euc,
-        }
-        self._last_map_ts = time.time()
+            # single atomic swap
+            self._map_snapshot = {
+                "grid": map.grid,
+                "width": map.width,
+                "height": map.height,
+                "offset_x": map.offset_x,
+                "offset_y": map.offset_y,
+                "resolution": map.resolution,
+                "obstacle_distance_map": euc,
+            }
+            self._last_map_ts = time.time()
+        
+        finally:
+            self._edt_busy = False
 
     @aparsedata(TimedMovement3DoF)
     async def on_slam_pose(self, pose):
@@ -418,7 +422,7 @@ class MotionController(AsyncROSClient):
             
             self.robot_x = anchor_slam.x + (cur_odom.x - anchor_odom.x)
             self.robot_y = anchor_slam.y + (cur_odom.y - anchor_odom.y)
-            self.robot_heading = anchor_slam.theta + (cur_odom.theta - anchor_odom.theta)
+            self.robot_heading = anchor_slam.theta + self._normalize_angle(cur_odom.theta - anchor_odom.theta)
 
     @aparsedata(Vector)
     async def on_motorcontroller_velocity(self, velocity: Vector):
@@ -427,8 +431,8 @@ class MotionController(AsyncROSClient):
 
     @aparsedata(NumpyArray)
     async def on_pathplanner_globalpath(self, path: np.ndarray):
-        self.global_path = path
         self.target_idx = 0
+        self.global_path = path
 
 
 async def main():
@@ -458,8 +462,13 @@ async def main():
                 await cmdvel_topic.post(Vector(0, 0, 0))
                 continue
 
-            v, w = await asyncio.to_thread(client.compute_control)
-            await cmdvel_topic.post(Vector(v, w, 0))
+            try:
+                v, w = await asyncio.to_thread(client.compute_control)
+            except Exception as e:
+                print(f"compute_control failed: {e}", flush=True)
+                v, w = 0.0, 0.0
+            
+            await cmdvel_topic.post(Vector(v, w, 0)) # -w cause sits somewhere in the code; fix
 
     path_track = asyncio.create_task(run_path_tracker())
 

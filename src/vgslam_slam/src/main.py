@@ -27,80 +27,83 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
     nq = 0
     nq_start_time = time.time()
 
-    while True:        
-        try:
-            scan = input_queue.get(timeout=1)
+    try:
+        while True:        
+            try:
+                scan = input_queue.get(timeout=1)
 
-            # shutdown signal
-            if scan is None:
-                break
+                # shutdown signal
+                if scan is None:
+                    print("SHUTDOWN")
+                    break
 
-            x, y, theta, distances, angles = scan
+                x, y, theta, distances, angles = scan
 
-        except Empty:
-            continue
+            except Empty:
+                continue
 
-        print("got scan", flush=True)
-        nq += 1
-        
-        if (nq + 1) % 100 == 0:
-            nq_start_time = time.time()
-            nq = 0
-
-        angles = np.asarray(angles)
-        distances = np.asarray(distances)
-        pcl = scan_to_cloud(
-            distances,
-            angles,
-            range_threshold
-        )
-        
-        data = PositionedCloud(
-            pcl,
-            np.array([x, y, theta]),
-            resolution=voxel_resolution,
-        )
-
-        pose, closed = mapper.process_scan(data) # this takes ~1.2e-4 seconds to process in average on RPi5
-        
-        if pose is None:
-            print("skipped scan", flush=True)
-            continue
-        
-        if closed:
-            print("successful loop closure", flush=True)
-
-        movement_msg = TimedMovement3DoF(
-            movement=Movement3DoF(
-                x=pose[0],
-                y=pose[1],
-                theta=pose[2],
-            ),
-            timestamp=time.time()
-        )
-        mmap_data = None
-        
-        if nq % 30 == 0:
-            print(f"Running at {nq / (time.time() - nq_start_time)}Hz", flush=True)
-
-        if map_counter % 3 == 0:
-            grid = mapper.create_occupancy_grid(occupied_threshold)
+            print("got scan", flush=True)
+            nq += 1
             
-            mmap_data = SLAMOffsetMap(
-                grid=grid.grid,
-                width=grid.width,
-                height=grid.height,
-                offset_x=grid.zero_offset_x_px,
-                offset_y=grid.zero_offset_y_px,
-                resolution=grid.resolution,
+            if (nq + 1) % 100 == 0:
+                nq_start_time = time.time()
+                nq = 0
+
+            angles = np.asarray(angles)
+            distances = np.asarray(distances)
+            pcl = scan_to_cloud(
+                distances,
+                angles,
+                range_threshold
+            )
+            
+            data = PositionedCloud(
+                pcl,
+                np.array([x, y, theta]),
+                resolution=voxel_resolution,
             )
 
-            mmap_data = SLAMOffsetMap.encode(mmap_data)
+            pose, closed = mapper.process_scan(data) # this takes ~1.2e-4 seconds to process in average on RPi5
+            
+            if pose is None:
+                print("skipped scan", flush=True)
+                continue
+            
+            if closed:
+                print("successful loop closure", flush=True)
 
-        map_counter += 1
-        output_queue.put((TimedMovement3DoF.encode(movement_msg), mmap_data))
+            movement_msg = TimedMovement3DoF(
+                movement=Movement3DoF(
+                    x=pose[0],
+                    y=pose[1],
+                    theta=pose[2],
+                ),
+                timestamp=time.time()
+            )
+            mmap_data = None
+            
+            if (nq + 1) % 30 == 0:
+                print(f"Running at {nq / (time.time() - nq_start_time)}Hz", flush=True)
 
-    print("done", flush=True)
+            if map_counter % 3 == 0:
+                grid = mapper.create_occupancy_grid(occupied_threshold)
+                
+                mmap_data = SLAMOffsetMap(
+                    grid=grid.grid,
+                    width=grid.width,
+                    height=grid.height,
+                    offset_x=grid.zero_offset_x_px,
+                    offset_y=grid.zero_offset_y_px,
+                    resolution=grid.resolution,
+                )
+
+                mmap_data = SLAMOffsetMap.encode(mmap_data)
+
+            map_counter += 1
+            output_queue.put((TimedMovement3DoF.encode(movement_msg), mmap_data))
+
+    except Exception as e:
+        print(f"slam_worker exiting {e}", flush=True)
 
 class FixedSizeList(list):
     def __init__(self, maxlen, iterable=()):
@@ -151,32 +154,34 @@ class SLAMClient(AsyncROSClient):
 
     def start_slam_process(self):
         self.running.set()
-        self.slam_proc = mp.Process(
-            target=slam_worker, args=(self.scan_queue, self.result_queue), daemon=True
-        )
+        self.slam_proc = mp.Process(target=slam_worker, args=(self.scan_queue, self.result_queue), daemon=True)
         self.slam_proc.start()
 
     async def consume_results(self):
-        loop = asyncio.get_running_loop()
         while self.running.is_set():
-            try:
-                res = await loop.run_in_executor(None, self.result_queue.get, True, 1.0)
-                movement_data, mmap_data = res
-
-                self.last_pos = movement_data
-                self._pos_version += 1
-                
-                if mmap_data is not None:
-                    self.last_map = mmap_data
-                    self._map_version += 1
-
-            except Empty:
+            if self.slam_proc is None or not self.slam_proc.is_alive():
+                print("slam_worker died - restarting", flush=True)
+                self.start_slam_process()
+                await asyncio.sleep(1.0)
                 continue
+            
+            try:
+                res = self.result_queue.get_nowait()
+            except Empty:
+                await asyncio.sleep(0.001)
+                continue
+        
+            movement_data, mmap_data = res
+
+            self.last_pos = movement_data
+            self._pos_version += 1
+            
+            if mmap_data is not None:
+                self.last_map = mmap_data
+                self._map_version += 1
 
     @aparsedata(datatypes.Lidar2D)
-    async def on_lidar_lidar(self, data):
-        print("got lidar")
-        
+    async def on_lidar_lidar(self, data):        
         if self.scan_queue.full():
             try:
                 self.scan_queue.get_nowait()
@@ -208,59 +213,72 @@ class SLAMClient(AsyncROSClient):
         self._odometry_event.set()
     
     async def wait_for_odometry_at(self, ts: float, max_retries: int = 2):        
-            for i, odom in enumerate(self._odometry):
-                if odom.timestamp >= ts:
-                    if i > 0:
-                        prev_odom = self._odometry[i - 1]
-                        return self._interpolate(odom, prev_odom, ts)
-    
-                    else:
-                        return self._odometry[0]
-    
-            self._odometry_event.clear()
-    
-            for _ in range(max_retries):
-                await self._odometry_event.wait()
+        for i, odom in enumerate(self._odometry):
+            if odom.timestamp >= ts:
+                if i > 0:
+                    prev_odom = self._odometry[i - 1]
+                    return self._interpolate(odom, prev_odom, ts)
+
+                else:
+                    return self._odometry[0]
+
+        self._odometry_event.clear()
+
+        for _ in range(max_retries):
+            # TODO: check if it works
+            try:
+                await asyncio.wait_for(
+                    self._odometry_event.wait(),
+                    timeout=0.5,
+                )
                 self._odometry_event.clear()
-    
-                if self._odometry[-1].timestamp >= ts:
-                    return self._interpolate(
-                        self._odometry[-1], self._odometry[-2], ts
-                    )
-    
-            return None
+            
+            except TimeoutError:
+                print("ODOMETRY TIMEOUT")
+                continue
+            
+            if not self._odometry:
+                continue
+            
+            if self._odometry[-1].timestamp >= ts:
+                prev = self._odometry[-2] if len(self._odometry) >= 2 else self._odometry[-1]
+                return self._interpolate(self._odometry[-1], prev, ts)
+
+        return None
 
     def _normalize_angle(self, angle):
-        while angle > np.pi:
-            angle -= 2 * np.pi
-
-        while angle < -np.pi:
-            angle += 2 * np.pi
-
-        return angle
+        return (angle + np.pi) % (2*np.pi) - np.pi
     
     def _interpolate(self, odom, prev_odom, timestamp):
+        if odom is None or prev_odom is None:
+            return odom.movement if odom is not None else None
+        if odom.timestamp == prev_odom.timestamp:
+            return odom.movement
+
         mov = odom.movement
         prev_mov = prev_odom.movement
-
         alpha = (timestamp - prev_odom.timestamp) / (odom.timestamp - prev_odom.timestamp)
+
         x = prev_mov.x + alpha * (mov.x - prev_mov.x)
         y = prev_mov.y + alpha * (mov.y - prev_mov.y)
-        theta = prev_mov.theta + alpha * (mov.theta - prev_mov.theta)
+        dtheta = self._normalize_angle(mov.theta - prev_mov.theta)
+        theta = prev_mov.theta + alpha * dtheta
 
-        return Movement3DoF(
-            x=x,
-            y=y,
-            theta=self._normalize_angle(theta),
-        )
+        return Movement3DoF(x=x, y=y, theta=self._normalize_angle(theta))
 
     def stop(self):
         self.running.clear()
-        self.scan_queue.put(None)
+        
+        try:
+            self.scan_queue.put(None, timeout=1.0)
+        except Exception:
+            pass
 
         if self.slam_proc:
-            self.slam_proc.join()
-
+            self.slam_proc.join(timeout=3.0)
+            if self.slam_proc.is_alive():
+                self.slam_proc.terminate()
+                self.slam_proc.join(timeout=1.0)
 
 async def main():
     client = SLAMClient()
