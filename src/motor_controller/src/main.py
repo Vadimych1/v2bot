@@ -70,16 +70,6 @@ class MotorControllerClient(AsyncROSClient):
 
         await self.serial.set_speeds(l, -r)
 
-    # @aparsedata(datatypes.TimedMovement3DoF)
-    # async def on_slam_pose(self, data):
-    #     self.n += 1
-        
-    #     mov = data.movement
-    #     print(mov.x, mov.y, mov.theta)
-
-        # if self.n % 300 == 0: # TODO: move to config
-        #     await self.serial.reset_position(mov.x, mov.y, -mov.theta)
-
     async def open_port(self):
         await self.serial.serial.open()
 
@@ -101,28 +91,45 @@ async def main():
     async def run():
         await client.wait()
 
+        prev = time.monotonic()
+
         odometry_topic = await client.topic("odometry", datatypes.TimedMovement3DoF)
         speeds_topic = await client.topic("velocity", datatypes.Vector)
 
-        while is_running:
-            if client.serial.last_odometry is not None:
-                x, y, t, v, w = client.serial.last_odometry
+        last_seen_odometry = -1
+        
+        with open("odometry_log.txt", "+a", -1, "utf-8") as f:
+            while is_running:
+                version = client.serial.odometry_version
+                if version != last_seen_odometry:
+                    odom = client.serial.last_odometry                
 
-                await odometry_topic.post(
-                    datatypes.TimedMovement3DoF(
-                        timestamp=time.time(),
-                        movement=datatypes.Movement3DoF(
-                            x=x,
-                            y=y,
-                            theta=t,
-                        ),
+                    if odom is None:
+                        continue
+
+                    last_seen_odometry = version                
+                    x, y, t, v, w = odom
+
+                    # logging to check odometry consistency
+                    t = time.monotonic()
+                    f.write(f"{t - prev}\n")
+                    prev = t
+
+                    await odometry_topic.post(
+                        datatypes.TimedMovement3DoF(
+                            timestamp=time.time(),
+                            movement=datatypes.Movement3DoF(
+                                x=x,
+                                y=y,
+                                theta=t,
+                            ),
+                        )
                     )
-                )
-                await speeds_topic.post(datatypes.Vector(v, w, 0))
-            
-            await asyncio.sleep(odometry_post_delay)
+                    await speeds_topic.post(datatypes.Vector(v, w, 0))
+                
+                await asyncio.sleep(odometry_post_delay)
 
-        await client.stop()
+            await client.stop()
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
