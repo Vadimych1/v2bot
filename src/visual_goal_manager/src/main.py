@@ -24,9 +24,11 @@ class GoalManagerClient(AsyncROSClient):
         self.goal_topic = None
 
         self.latest_map = None
+        self.saved_pose = None
         self.latest_pose = None
         self.latest_path = None
         self.latest_cmdvel = None
+        self.latest_odometry_pose = None
         self.latest_slam_pose = None
 
         self.web_clients: set[WebSocket] = set()
@@ -47,10 +49,11 @@ class GoalManagerClient(AsyncROSClient):
         
     @aparsedata(datatypes.TimedMovement3DoF)
     async def on_slam_pose(self, data):
+        self.saved_pose = self.latest_odometry_pose
         self.latest_slam_pose = {
             "x": data.movement.x,
             "y": data.movement.y,
-            "theta": data.movement.theta,
+            "heading": data.movement.theta,
         }
         
         await self.broadcast({
@@ -60,11 +63,18 @@ class GoalManagerClient(AsyncROSClient):
 
     @aparsedata(datatypes.TimedMovement3DoF)
     async def on_motorcontroller_odometry(self, data):
-        self.latest_pose = {
+        self.latest_odometry_pose = {
             "x": float(data.movement.x),
             "y": float(data.movement.y),
             "heading": float(data.movement.theta),
         }
+        
+        if self.latest_slam_pose != None and self.saved_pose != None:
+            self.latest_pose = {
+                "x": self.latest_slam_pose["x"] + (self.latest_odometry_pose["x"] - self.saved_pose["x"]),
+                "y": self.latest_slam_pose["y"] + (self.latest_odometry_pose["y"] - self.saved_pose["y"]),
+                "heading": self.latest_slam_pose["heading"] + (self.latest_odometry_pose["heading"] - self.saved_pose["heading"]),
+            }
 
         await self.broadcast({"type": "pose", "pose": self.latest_pose})
 

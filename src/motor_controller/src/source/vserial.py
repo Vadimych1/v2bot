@@ -7,12 +7,12 @@ class ArduinoSerial:
     def __init__(self, port, baudrate=115200):
         """Initialize serial connection"""
         self.serial = wireio.AsyncSerial(port, baudrate, timeout=1)
+        
         self.last_odometry = None
+        self.odometry_version = 0
         
         self.running = Event()
         self._lock = Lock()
-
-        time.sleep(2)  # Wait for Arduino to connect
 
     async def set_speeds(self, left: float, right: float):
         data = f"S {left:.4f} {right:.4f}\n"
@@ -30,19 +30,29 @@ class ArduinoSerial:
 
     async def fetch_one(self):
         try:
-            data = await self.serial.read_until(b"\n", 32)
+            # TODO: check if that fixed bad formats and value errors
+            data = await self.serial.read_until(b"\n", 128)
+            line = data.decode(errors="ignore").strip()
+            
+            if not line or line[0] not in "-0123456789":
+                return
 
-            l = data.decode().strip().split(" ")
-            l = list(map(float, l))
+            parts = line.split(" ")
+            if len(parts) != 5:
+                return
+            
+            l = list(map(float, parts))
+            self.last_odometry = l
+            self.odometry_version += 1
 
-            if len(l) == 5:
-                self.last_odometry = l
+        except UnicodeDecodeError:
+            pass
 
-        except ValueError:
+        except ValueError as e:
+            print(f"VALUE ERROR: {e}")
             pass
 
     async def fetch_task(self):
-                
         nq = 0
         nq_start_time = time.time()
 
@@ -51,9 +61,12 @@ class ArduinoSerial:
             nq += 1
             await self.fetch_one()
             
-            if nq % 30 == 0:
-                print(f"Running at {nq / (time.time() - nq_start_time)}Hz")
+            if (nq + 1) % 30 == 0:
+                print(f"Running at {nq / (time.time() - nq_start_time)}hz")
     
+            if (nq + 1) % 100 == 0:
+                nq = 0
+                nq_start_time = time.time()
 
     async def close(self):
         """Close serial connection"""
