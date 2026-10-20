@@ -166,6 +166,10 @@ class PathPlanner(AsyncROSClient):
         if px < 0 or px >= self.d_width or py < 0 or py >= self.d_height:
             return self.min_x < wx < self.max_x and self.min_y < wy < self.max_y
 
+        # NOTE: those two conditions could cause robot to try to go through
+        # the walls; although that should not happen while moving correctly,
+        # note that this could be the possible problem; needs fixing
+
         # for robot to not stuck in the walls
         if (
             self.start_pos is not None
@@ -176,7 +180,7 @@ class PathPlanner(AsyncROSClient):
         # for robot to be able to move to end_pos if it is near the wall
         if (
             self.end_pos is not None
-            and self._distance((wx, wy), self.end_pos) <= self.robot_radius_m
+            and self._distance((wx, wy), self.end_pos) <= (self.robot_radius_m * 0.6)
         ):
             return True
 

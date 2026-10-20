@@ -157,6 +157,11 @@ class SLAMClient(AsyncROSClient):
         while self.running.is_set():
             if self.slam_proc is None or not self.slam_proc.is_alive():
                 print("slam_worker died - restarting", flush=True)
+                
+                # TODO: now restarting slam means that the map and slam's internal graph
+                # are fully reset without any ability to recover; VGSLAM has a save/load state 
+                # feature that could be possibly used to reload state from file if SLAM has
+                # restarted while working. will be added in the next update
                 self.start_slam_process()
                 await asyncio.sleep(1.0)
                 continue

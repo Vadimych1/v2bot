@@ -97,37 +97,32 @@ async def main():
         speeds_topic = await client.topic("velocity", datatypes.Vector)
 
         last_seen_odometry = -1
-        
-        with open("odometry_log.txt", "+a", -1, "utf-8") as f:
-            while is_running:
-                version = client.serial.odometry_version
-                if version != last_seen_odometry:
-                    odom = client.serial.last_odometry                
+    
+        while is_running:
+            version = client.serial.odometry_version
+            if version != last_seen_odometry:
+                odom = client.serial.last_odometry                
 
-                    if odom is None:
-                        continue
+                if odom is None:
+                    await asyncio.sleep(odometry_post_delay)
+                    continue
 
-                    last_seen_odometry = version                
-                    x, y, theta, v, w = odom
+                last_seen_odometry = version                
+                x, y, theta, v, w = odom
 
-                    # logging to check odometry consistency
-                    t = time.monotonic()
-                    f.write(f"{t - prev}\n")
-                    prev = t
-
-                    await odometry_topic.post(
-                        datatypes.TimedMovement3DoF(
-                            timestamp=time.time(),
-                            movement=datatypes.Movement3DoF(
-                                x=x,
-                                y=y,
-                                theta=-theta,
-                            ),
-                        )
+                await odometry_topic.post(
+                    datatypes.TimedMovement3DoF(
+                        timestamp=time.time(),
+                        movement=datatypes.Movement3DoF(
+                            x=x,
+                            y=y,
+                            theta=-theta,
+                        ),
                     )
-                    await speeds_topic.post(datatypes.Vector(v, w, 0))
-            
-                await asyncio.sleep(odometry_post_delay)
+                )
+                await speeds_topic.post(datatypes.Vector(v, w, 0))
+        
+            await asyncio.sleep(odometry_post_delay)
 
         await client.stop()
 
