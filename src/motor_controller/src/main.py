@@ -66,7 +66,7 @@ class MotorControllerClient(AsyncROSClient):
         self.prev_v = v
         self.prev_w = w
 
-        l, r = self.ik.calculate_wheel_speeds(v, w)
+        l, r = self.ik.calculate_wheel_speeds(v, -w)
 
         await self.serial.set_speeds(l, -r)
 
@@ -114,7 +114,7 @@ async def main():
                         movement=datatypes.Movement3DoF(
                             x=x,
                             y=y,
-                            theta=t,
+                            theta=-t,
                         ),
                     )
                 )

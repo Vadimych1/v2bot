@@ -12,6 +12,8 @@ import numpy as np
 from vgslam import VGSLAM, PositionedCloud, scan_to_cloud
 
 def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
+    print("started", flush=True)
+    
     map_counter = 0
     
     map_resolution = get_config("vgslam.map_resolution")
@@ -38,14 +40,15 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
         except Empty:
             continue
 
+        print("got scan", flush=True)
         nq += 1
         
         if (nq + 1) % 100 == 0:
             nq_start_time = time.time()
             nq = 0
 
-        angles = np.asarray(scan.angles)
-        distances = np.asarray(scan.distances)
+        angles = np.asarray(angles)
+        distances = np.asarray(distances)
         pcl = scan_to_cloud(
             distances,
             angles,
@@ -97,6 +100,7 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
         map_counter += 1
         output_queue.put((TimedMovement3DoF.encode(movement_msg), mmap_data))
 
+    print("done", flush=True)
 
 class FixedSizeList(list):
     def __init__(self, maxlen, iterable=()):
@@ -265,7 +269,12 @@ async def main():
     map_post_delay = get_config("vgslam.miniros.map_post_delay")
     pose_post_delay = get_config("vgslam.miniros.pose_post_delay")
 
+    last_seen_map = -1
+    last_seen_pos = -1
+
     async def post_pos_job():
+        nonlocal last_seen_pos
+        
         await client.wait()
     
         # miniros allows you to send and receive data with any type you want
@@ -274,26 +283,25 @@ async def main():
         pos_topic = await client.topic("pose", datatypes.Bytes)
 
         while client.running.is_set():
-            if client.last_pos is not None:
+            if client.last_pos is not None and last_seen_pos != client._pos_version:
                 await pos_topic.post(client.last_pos)
+                last_seen_pos = client._pos_version
 
             await asyncio.sleep(pose_post_delay)
 
     async def post_map_job():
+        nonlocal last_seen_pos, last_seen_map
+        
         await client.wait()
 
         map_topic = await client.topic("map", datatypes.Bytes)
-
-        last_seen_map = -1
-        last_seen_pos = -1
+        
         while client.running.is_set():
             if client.last_map is not None and last_seen_map != client._map_version:
                 last_seen_map = client._map_version
                 await map_topic.post(client.last_map)
 
-            if last_seen_pos != client._pos_version:
-                last_seen_pos = client._pos_version
-                await asyncio.sleep(map_post_delay)
+            await asyncio.sleep(map_post_delay)
 
     async def run():
         await client.wait()

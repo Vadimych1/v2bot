@@ -197,7 +197,9 @@ class MotionController(AsyncROSClient):
         of_x, 
         of_y, 
         width, 
-        height
+        height,
+        robot_x,
+        robot_y
     ):
         if (
             len(states) <= 0
@@ -226,7 +228,7 @@ class MotionController(AsyncROSClient):
         heading_cost = self.config.weight_heading * heading_error
 
         ### Progress reward
-        start_dist = math.hypot(self.robot_x - target_x, self.robot_y - target_y)
+        start_dist = math.hypot(robot_x - target_x, robot_y - target_y)
         end_dist = math.hypot(states[-1][0] - target_x, states[-1][1] - target_y)
         
         progress = start_dist - end_dist
@@ -246,7 +248,6 @@ class MotionController(AsyncROSClient):
             speed_cost += (1.0 - t) * (1.0 - t) * 0.1
 
         # obstacle cost
-        safety_margin = self.config.robot_radius
         influence_distance = (
             self.config.robot_radius + 0.05
         )  # TODO: get rid of magic value
@@ -254,7 +255,7 @@ class MotionController(AsyncROSClient):
         obstacle_cost = 0.0
         
         ### Stationary penalty
-        if abs(v) < 1e-4 and abs(w) < 1e-4:
+        if abs(v) < 1e-4:
             stationary_penalty = 0.5
         else:
             stationary_penalty = 0.0
@@ -360,7 +361,7 @@ class MotionController(AsyncROSClient):
         for v in v_samples:
             for w in w_samples:
                 states = self._simulate_trajectory(v, w, x, y, theta)
-                cost = self._evaluate_trajectory(states, target, v, grid, obstacle_distance_map, resolution, of_x, of_y, width, height)
+                cost = self._evaluate_trajectory(states, target, v, obstacle_distance_map, resolution, of_x, of_y, width, height, x, y)
 
                 if cost < best_cost:
                     best_cost = cost
@@ -458,7 +459,7 @@ async def main():
                 continue
 
             v, w = await asyncio.to_thread(client.compute_control)
-            await cmdvel_topic.post(Vector(v, -w, 0))
+            await cmdvel_topic.post(Vector(v, w, 0))
 
     path_track = asyncio.create_task(run_path_tracker())
 
