@@ -57,8 +57,7 @@ class PathPlanner(AsyncROSClient):
         if self.grid is None:
             return False
 
-        robot_r = int(self.robot_radius_m / self.resolution)
-
+        robot_r = int(np.ceil(self.robot_radius_m / self.resolution))
         kernel = cv.getStructuringElement(
             cv.MORPH_RECT, (2 * robot_r + 1, 2 * robot_r + 1)
         )

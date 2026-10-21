@@ -44,6 +44,8 @@ class MotionControllerConfig:
 
         self.goal_tolerance = get_config("motion_controller.goal_tolerance")
         self.lookahead_distance = get_config("motion_controller.lookahead_distance")
+        
+        self.inf_mul = get_config("motion_controller.influence_distance_multiplier")
 
 
 class MotionController(AsyncROSClient):
@@ -172,11 +174,17 @@ class MotionController(AsyncROSClient):
     def _simulate_trajectory(self, v: float, w: float):
         states = []
         x, y, theta = self.robot_x, self.robot_y, self.robot_heading
+        dt = self.config.dt
 
         for _ in range(int(self.config.predict_time / self.config.dt)):
-            x += v * np.cos(theta) * self.config.dt
-            y += v * np.sin(theta) * self.config.dt
-            theta += w * self.config.dt
+            if abs(w) > 1e-6:
+                x_new = x + (v/w) * (math.sin(theta + w*dt) - math.sin(theta))
+                y_new = y - (v/w) * (math.cos(theta + w*dt) - math.cos(theta))
+            else:
+                x_new = x + v * math.cos(theta) * dt
+                y_new = y + v * math.sin(theta) * dt
+            x, y = x_new, y_new
+            theta += w * dt
 
             states.append((x, y, theta))
 
@@ -194,6 +202,8 @@ class MotionController(AsyncROSClient):
 
         return self.obstacle_distance_map[py, px]
 
+    # TODO: instead of returning float('inf') when too close to obstacle
+    # add a penetration_cost that will calculate how much we are stuck in the wall
     def _evaluate_trajectory(
         self, states: list[tuple[float, float, float]], v: float, w: float
     ):
@@ -230,9 +240,10 @@ class MotionController(AsyncROSClient):
 
         # obstacle cost
         safety_margin = self.config.robot_radius
-        influence_distance = (
-            self.config.robot_radius + 0.05
-        )  # TODO: get rid of magic value
+        # influence_distance = (
+        #     self.config.robot_radius + 0.05
+        # )  # TODO: get rid of magic value
+        influence_distance = self.config.robot_radius * self.config.inf_mul + 0.15
 
         obstacle_cost = 0.0
 
