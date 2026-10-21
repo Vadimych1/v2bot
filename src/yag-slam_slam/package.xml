@@ -9,9 +9,9 @@
 	</authors>
 
 	<requirements>
-		<pip>yag-slam&gt;=0.3.0</pip>
-		<pip>tiny-tf&gt;=1.1.0</pip>
-		<pip>karto-scanmatcher&gt;=1.0.0</pip>
+		<!-- <pip>yag-slam&gt;=0.3.0</pip> -->
+		<!-- <pip>tiny-tf&gt;=1.1.0</pip> -->
+		<!-- <pip>karto-scanmatcher&gt;=1.0.0</pip> -->
 		<miniros>miniros&gt;=1.1.0</miniros>
 	</requirements>
 </package>

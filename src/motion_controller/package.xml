@@ -9,8 +9,8 @@
 	</authors>
 
 	<requirements>
-		<pip>scipy&gt;=1.15.0</pip>
-		<pip>numpy&gt;=2.5.0</pip>
+		<!-- <pip>scipy&gt;=1.15.0</pip>
+		<pip>numpy&gt;=2.5.0</pip> -->
 		<miniros>miniros&gt;=1.1.0</miniros>
 		<miniros>miniros_slam&gt;=1.0.0</miniros>
 	</requirements>

@@ -1,6 +1,8 @@
-import time
 import asyncio
+import time
 
+from scipy.spatial import KDTree
+import math, random
 import numpy as np
 import cv2 as cv
 
@@ -10,6 +12,71 @@ from miniros_slam.source.datatypes import SLAMOffsetMap
 from miniros.util.datatypes import TimedMovement3DoF, NumpyArray, Vector
 from miniros_configurator import get_config
 
+# spatial index for RRT*
+class _RRTIndex:
+    __slots__ = ("rebuild_every", "_pos", "_kd", "_kd_size", "_pending")
+    
+    def __init__(self, rebuild_every: int = 64) -> None:
+        self.rebuild_every = rebuild_every
+        self._pos: list[tuple[float, float]] = []
+        self._kd: KDTree | None = None
+        self._kd_size = 0
+        self._pending: list[int] = []
+    
+    def insert(self, pos) -> int:
+        idx = len(self._pos)
+        self._pos.append((float(pos[0]), float(pos[1])))
+        self._pending.append(idx)
+        if len(self._pending) >= self.rebuild_every:
+            self._rebuild()
+        return idx
+    
+    def _rebuild(self) -> None:
+        self._kd = KDTree(self._pos)
+        self._kd_size = len(self._pos)
+        self._pending.clear()
+    
+    def nearest(self, pos) -> int:
+        if not self._pos:
+            return -1
+        
+        best_idx = -1
+        best_d = float('inf')
+        
+        if self._kd is not None and self._kd_size > 0:
+            d, i = self._kd.query(pos)
+            best_d = float(d)
+            best_idx = int(i)
+        
+        px, py = pos
+        for idx in self._pending:
+            x, y = self._pos[idx]
+            d = math.hypot(px - x, py - y)
+            if d < best_d:
+                best_d = d
+                best_idx = idx
+        
+        return best_idx
+    
+    def near(self, pos, radius: float) -> list[int]:
+        if not self._pos:
+            return []
+        
+        if self._kd is not None and self._kd_size > 0:
+            result = list(self._kd.query_ball_point(pos, radius))
+        else:
+            result = []
+        
+        px, py = pos
+        r2 = radius * radius
+        for idx in self._pending:
+            x, y = self._pos[idx]
+            dx = px - x
+            dy = py - y
+            if dx * dx + dy * dy <= r2:
+                result.append(idx)
+        
+        return result
 
 class PathPlanner(AsyncROSClient):
     def __init__(self, ip="localhost", port=3000, _parse_handlers=True):
@@ -59,7 +126,7 @@ class PathPlanner(AsyncROSClient):
 
         robot_r = int(np.ceil(self.robot_radius_m / self.resolution))
         kernel = cv.getStructuringElement(
-            cv.MORPH_RECT, (2 * robot_r + 1, 2 * robot_r + 1)
+            cv.MORPH_ELLIPSE, (2 * robot_r + 1, 2 * robot_r + 1)
         )
 
         obstacle_mask = (self.grid < self._obstacle_upper_threshold).astype(
@@ -92,15 +159,27 @@ class PathPlanner(AsyncROSClient):
         px, py = pixel_point
         px, py = int(px), int(py)
 
-        wx, wy = self._pixel_to_world(pixel_point)
+        wx, wy = self._pixel_to_world((px, py))
 
         # if out-of-bounds, allow to move to at most +-d_width or +-d_height
         if px < 0 or px >= self.d_width or py < 0 or py >= self.d_height:
             return self.min_x < wx < self.max_x and self.min_y < wy < self.max_y
 
+        # NOTE: those two conditions could cause robot to try to go through
+        # the walls; although that should not happen while moving correctly,
+        # note that this could be the possible problem; needs fixing
+
+        # for robot to not stuck in the walls
         if (
             self.start_pos is not None
-            and self._distance((wx, wy), self.start_pos) <= self.robot_radius_m
+            and self._distance((wx, wy), self.start_pos) <= (self.robot_radius_m * 0.6)
+        ):
+            return True
+        
+        # for robot to be able to move to end_pos if it is near the wall
+        if (
+            self.end_pos is not None
+            and self._distance((wx, wy), self.end_pos) <= (self.robot_radius_m * 0.6)
         ):
             return True
 
@@ -147,27 +226,7 @@ class PathPlanner(AsyncROSClient):
         return True
 
     def _distance(self, a: tuple[float, float], b: tuple[float, float]) -> float:
-        return np.hypot(a[0] - b[0], a[1] - b[1])
-
-    def _nearest(self, tree, point: tuple[float, float]):
-        min_dist = float("inf")
-        nearest_idx = -1
-
-        for i, node in enumerate(tree):
-            d = self._distance(node["pos"], point)
-            if d < min_dist:
-                min_dist = d
-                nearest_idx = i
-
-        return nearest_idx
-
-    def _near(self, tree, point: tuple[float, float], radius: float):
-        indicies = []
-        for i, node in enumerate(tree):
-            if self._distance(node["pos"], point) <= radius:
-                indicies.append(i)
-
-        return indicies
+        return math.hypot(a[0] - b[0], a[1] - b[1])
 
     def _steer(
         self, from_pos: tuple[float, float], to_pos: tuple[float, float], step: float
@@ -183,6 +242,13 @@ class PathPlanner(AsyncROSClient):
         new_y = from_pos[1] + (to_pos[1] - from_pos[1]) * ratio
 
         return new_x, new_y
+
+    def _propagate_cost_delta(self, tree, root_idx: int, delta: float) -> None:
+        stack = [root_idx]
+        while stack:
+            i = stack.pop()
+            tree[i]["cost"] += delta
+            stack.extend(tree[i]["children"])
 
     def _greedy_shortcut(
         self, pixel_path: list[tuple[int, int]], max_lookahead: int = 6
@@ -245,22 +311,30 @@ class PathPlanner(AsyncROSClient):
         if not end_free:
             return None
 
-        tree = [{"pos": start_pixel, "parent": -1, "cost": 0.0}]
+        tree = [{"pos": start_pixel, "parent": -1, "cost": 0.0, "children": []}]
+        index = _RRTIndex(rebuild_every=64)
+        index.insert(start_pixel)
 
+        gamma_factor = get_config("path_planner.pathfinder.rrt_star_gamma")
+        radius_floor = get_config("path_planner.pathfinder.rrt_star_radius_floor")
+        radius_cap = get_config("path_planner.pathfinder.rrt_star_radius_cap")
+        
         def get_radius(n: int) -> float:
-            gamma = 50.0 * search_radius_factor
-
             if n <= 1:
-                return step_size * 2
-
-            return min(step_size * 5, gamma * np.sqrt(np.log(n) / n))
+                return step_size * 2.0
+            
+            gamma = gamma_factor * search_radius_factor
+            r_theoretical = gamma * math.sqrt(math.log(n) / n)
+            
+            r_floored = max(r_theoretical, step_size * radius_floor)
+            return min(r_floored, step_size * radius_cap)
 
         for _ in range(max_iter):
-            rand_x = np.random.uniform(self.min_x, self.max_x)
-            rand_y = np.random.uniform(self.min_y, self.max_y)
+            rand_x = random.uniform(self.min_x, self.max_x)
+            rand_y = random.uniform(self.min_y, self.max_y)
             rand_point = self._world_to_pixel((rand_x, rand_y))
 
-            nearest_idx = self._nearest(tree, rand_point)
+            nearest_idx = index.nearest(rand_point)
             nearest_node = tree[nearest_idx]
             nearest_pos = nearest_node["pos"]
 
@@ -272,19 +346,20 @@ class PathPlanner(AsyncROSClient):
                 continue
 
             radius = get_radius(len(tree))
-            near_indices = self._near(tree, new_pos, radius)
+            near_indices = index.near(new_pos, radius)
 
+            # --- best parent selection ---
             min_cost = float("inf")
             best_parent = nearest_idx
             for idx in near_indices:
                 node = tree[idx]
-
                 if self._line_of_sight(node["pos"], new_pos):
                     cost_candidate = node["cost"] + self._distance(node["pos"], new_pos)
                     if cost_candidate < min_cost:
                         min_cost = cost_candidate
                         best_parent = idx
 
+            # fallback: nearest not in near_indices (small radius, big step)
             if nearest_idx not in near_indices:
                 if self._line_of_sight(nearest_pos, new_pos):
                     cost_candidate = nearest_node["cost"] + self._distance(
@@ -297,25 +372,38 @@ class PathPlanner(AsyncROSClient):
             if min_cost == float("inf"):
                 continue
 
-            new_node = {"pos": new_pos, "parent": best_parent, "cost": min_cost}
+            # --- insert new node ---
+            new_node = {"pos": new_pos, "parent": best_parent, "cost": min_cost, "children": []}
             tree.append(new_node)
             new_idx = len(tree) - 1
+            tree[best_parent]["children"].append(new_idx)
+            index.insert(new_pos)
 
-            # rewire
+            # --- rewire (with subtree cost propagation) ---
             for idx in near_indices:
+                if idx == new_idx or idx == best_parent:
+                    continue
+
                 node = tree[idx]
                 cost_via_new = new_node["cost"] + self._distance(new_pos, node["pos"])
 
-                if cost_via_new < node["cost"] and self._line_of_sight(
-                    new_pos, node["pos"]
-                ):
+                if cost_via_new < node["cost"] and self._line_of_sight(new_pos, node["pos"]):
+                    delta = cost_via_new - node["cost"]
+
+                    old_parent = node["parent"]
+                    if old_parent >= 0:
+                        tree[old_parent]["children"].remove(idx)
+
                     node["parent"] = new_idx
-                    node["cost"] = cost_via_new
+                    tree[new_idx]["children"].append(idx)
+
+                    self._propagate_cost_delta(tree, idx, delta)
 
             if self._distance(
                 new_pos, end_pixel
             ) <= goal_tolerance and self._line_of_sight(new_pos, end_pixel):
                 end_cost = new_node["cost"] + self._distance(new_pos, end_pixel)
+                # "children" property can be omitted here
                 end_node = {"pos": end_pixel, "parent": new_idx, "cost": end_cost}
 
                 tree.append(end_node)
@@ -394,6 +482,8 @@ async def main():
 
         prev_goal = None
         k = 0
+        failed = 0
+        
         while True:
             await asyncio.sleep(rebuild_check_time)
             k += 1
@@ -427,10 +517,17 @@ async def main():
                 k = 0
 
                 if path is None:
-                    await path_topic.post([])
+                    failed += 1
+                    
+                    k = 30
+                    if failed >= 3:
+                        await path_topic.post([])
+                        
                     print(f"[] Failed path in {build_end - build_start} seconds")
 
                 else:
+                    failed = 0
+                    
                     await path_topic.post(np.asarray(path))
                     print(f"[] Built path in {build_end - build_start} seconds")
 

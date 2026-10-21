@@ -2,34 +2,18 @@ import asyncio
 from queue import Empty
 import multiprocessing as mp
 
-from karto_scanmatcher import Pose2
+from .source.helpers import FixedSizeList, pose2movement
+
+import math
 from yag_slam.graph_slam import GraphSlam
 from yag_slam.models import LocalizedRangeScan
 from yag_slam.scan_matching import Scan2DMatcherCpp
-from tiny_tf.tf import Transform
-from tiny_tf.transformations import quaternion_from_euler
 
 import time
 from miniros_configurator import get_config
-from miniros import AsyncROSClient, datatypes
+from miniros import AsyncROSClient, datatypes, aparsedata
 from miniros_slam.source.datatypes import SLAMOffsetMap
-from miniros.util.datatypes import Movement3DoF, TimedMovement3DoF
-
-
-def movement2transform(msg) -> Transform:
-    return Transform(msg.x, msg.y, 0, *quaternion_from_euler(0, 0, msg.theta))
-
-
-def pose2movement(pose: Pose2, timestamp: float):
-    return TimedMovement3DoF(
-        movement=Movement3DoF(
-            x=pose.x,
-            y=pose.y,
-            theta=pose.yaw,
-        ),
-        timestamp=timestamp,
-    )
-
+from miniros.util.datatypes import Movement3DoF, TimedMovement3DoF, Lidar2D
 
 def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
     seq_scan_matcher_config = get_config("yag-slam.seq_scan_matcher")
@@ -44,6 +28,7 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
         scan_buffer_len=get_config("yag-slam.scan_buffer_len"),
         min_response_coarse=get_config("yag-slam.min_response_coarse"),
         min_response_fine=get_config("yag-slam.min_response_fine"),
+        verbose=True
     )
 
     map_counter = 0
@@ -67,39 +52,36 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
             if scan is None:
                 break
 
-            scan = datatypes.Lidar2D.decode(scan)
+            x, y, theta, distances, angles = scan
 
         except Empty:
             continue
 
-        pose = scan.pos
-
-        # todo: check if this line necessary
-        ranges, angles = zip(
-            *sorted(zip(scan.distances, scan.angles), key=lambda x: x[1])
-        )
-        step = (angles[-1] - angles[0]) / len(angles)
         start_ang = min(angles)
         end_ang = max(angles)
+        step = (end_ang - start_ang) / len(angles)
 
         data = LocalizedRangeScan(
-            ranges,
+            distances,
             start_ang,
             end_ang,
             step,
             lidar_min_distance,
             lidar_max_distance,
             lidar_range_threshold,
-            pose.x,
-            pose.y,
-            pose.theta,
+            x,
+            y,
+            theta,
         )
 
         res, closed = mapper.process_scan(data)
         if res is None or res.best_pose is None:
             continue
 
-        movement_msg = pose2movement(res.best_pose, scan.timestamp)
+        if closed:
+            print("Loop closed")
+
+        movement_msg = pose2movement(res.best_pose, time.time())
         mmap_data = None
         
         if nq % 30 == 0:
@@ -136,11 +118,14 @@ class SLAMClient(AsyncROSClient):
         self.scan_queue = mp.Queue(get_config("yag-slam.miniros.scan_queue_len"))
         self.result_queue = mp.Queue()
 
-        self.last_pos: datatypes.Movement | None = None
+        self.last_pos = None
         self.last_map: tuple | None = None
 
         self.running = asyncio.Event()
         self.slam_proc = None
+        
+        self._odometry_event = asyncio.Event()
+        self._odometry = FixedSizeList(10)
 
     def start_slam_process(self):
         self.running.set()
@@ -163,7 +148,7 @@ class SLAMClient(AsyncROSClient):
             except Empty:
                 await asyncio.sleep(0.01)
 
-    # we are passing raw bytes to slam process for efficiency
+    @aparsedata(Lidar2D)
     async def on_lidar_lidar(self, data):
         if self.scan_queue.full():
             try:
@@ -173,12 +158,69 @@ class SLAMClient(AsyncROSClient):
                 pass
 
         try:
-            self.scan_queue.put_nowait(data)
+            mov = await self.wait_for_odometry_at(data.timestamp, max_retries=3)
+            self.scan_queue.put_nowait((
+                mov.x,
+                mov.y,
+                mov.theta,
+                data.distances,
+                data.angles,
+            ))
 
         except Exception:
             pass
 
-        # await self.anon("lidar", "ping", b"hi")
+    @aparsedata(TimedMovement3DoF)
+    async def on_motorcontroller_odometry(self, data):
+        self._odometry.append(data)
+        self._odometry_event.set()
+    
+    async def wait_for_odometry_at(self, ts: float, max_retries: int = 2):        
+        for i, odom in enumerate(self._odometry):
+            if odom.timestamp >= ts:
+                if i > 0:
+                    prev_odom = self._odometry[i - 1]
+                    return self._interpolate(odom, prev_odom, ts)
+
+                else:
+                    return self._odometry[0]
+
+        self._odometry_event.clear()
+
+        for _ in range(max_retries):
+            await self._odometry_event.wait()
+            self._odometry_event.clear()
+
+            if self._odometry[-1].timestamp >= ts:
+                return self._interpolate(
+                    self._odometry[-1], self._odometry[-2], ts
+                )
+
+        return self._odometry[-1]
+
+    def _normalize_angle(self, angle):
+        while angle > math.pi:
+            angle -= 2 * math.pi
+
+        while angle < -math.pi:
+            angle += 2 * math.pi
+
+        return angle
+    
+    def _interpolate(self, odom, prev_odom, timestamp):
+        mov = odom.movement
+        prev_mov = prev_odom.movement
+
+        alpha = (timestamp - prev_odom.timestamp) / (odom.timestamp - prev_odom.timestamp)
+        x = prev_mov.x + alpha * (mov.x - prev_mov.x)
+        y = prev_mov.y + alpha * (mov.y - prev_mov.y)
+        theta = prev_mov.theta + alpha * (mov.theta - prev_mov.theta)
+
+        return Movement3DoF(
+            x=x,
+            y=y,
+            theta=self._normalize_angle(theta),
+        )
 
     def stop(self):
         self.running.clear()

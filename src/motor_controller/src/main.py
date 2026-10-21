@@ -66,19 +66,9 @@ class MotorControllerClient(AsyncROSClient):
         self.prev_v = v
         self.prev_w = w
 
-        l, r = self.ik.calculate_wheel_speeds(v, w)
+        l, r = self.ik.calculate_wheel_speeds(v, -w)
 
         await self.serial.set_speeds(l, -r)
-
-    @aparsedata(datatypes.TimedMovement3DoF)
-    async def on_slam_pose(self, data):
-        self.n += 1
-        
-        mov = data.movement
-        print(mov.x, mov.y, mov.theta)
-
-        if self.n % 30 == 0:
-            await self.serial.reset_position(mov.x, mov.y, mov.theta)
 
     async def open_port(self):
         await self.serial.serial.open()
@@ -101,12 +91,24 @@ async def main():
     async def run():
         await client.wait()
 
+        prev = time.monotonic()
+
         odometry_topic = await client.topic("odometry", datatypes.TimedMovement3DoF)
         speeds_topic = await client.topic("velocity", datatypes.Vector)
 
+        last_seen_odometry = -1
+    
         while is_running:
-            if client.serial.last_odometry is not None:
-                x, y, t, v, w = client.serial.last_odometry
+            version = client.serial.odometry_version
+            if version != last_seen_odometry:
+                odom = client.serial.last_odometry                
+
+                if odom is None:
+                    await asyncio.sleep(odometry_post_delay)
+                    continue
+
+                last_seen_odometry = version                
+                x, y, theta, v, w = odom
 
                 await odometry_topic.post(
                     datatypes.TimedMovement3DoF(
@@ -114,12 +116,12 @@ async def main():
                         movement=datatypes.Movement3DoF(
                             x=x,
                             y=y,
-                            theta=t,
+                            theta=-theta,
                         ),
                     )
                 )
                 await speeds_topic.post(datatypes.Vector(v, w, 0))
-            
+        
             await asyncio.sleep(odometry_post_delay)
 
         await client.stop()
