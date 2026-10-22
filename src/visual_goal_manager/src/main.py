@@ -1,3 +1,4 @@
+import json
 import base64, io
 import numpy as np
 from PIL import Image
@@ -30,6 +31,7 @@ class GoalManagerClient(AsyncROSClient):
         self.latest_cmdvel = None
         self.latest_odometry_pose = None
         self.latest_slam_pose = None
+        self.latest_saves = None
 
         self.web_clients: set[WebSocket] = set()
 
@@ -85,6 +87,34 @@ class GoalManagerClient(AsyncROSClient):
         ]
 
         await self.broadcast({"type": "path", "path": self.latest_path})
+
+    @aparsedata(datatypes.String)
+    async def on_savesreply(self, data: str, from_node: str):
+        try:
+            saves = json.loads(data)
+        
+        except Exception as e:
+            print(f"saves reply: {e}", flush=True)
+            return
+        
+        self.latest_saves = saves
+        await self.broadcast({"type": "saves", "saves": saves})
+
+    async def trigger_saves_list(self):
+        await self.anon("slam", "saves", datatypes.String.encode(
+            "savesreply"
+        ))
+    
+    async def trigger_save(self):
+        await self.anon("slam", "save", b"")
+        asyncio.create_task(self._refresh_saves_later(1.0))
+    
+    async def trigger_load(self, name: str):
+        await self.anon("slam", "load", datatypes.String.encode(name))
+
+    async def _refresh_saves_later(self, delay: float):
+        await asyncio.sleep(delay)
+        await self.trigger_saves_list()
 
     def encode_map(self, data):
         grid = np.asarray(data.grid)
@@ -178,6 +208,11 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_json(
                 {"type": "slam_pose", "pose": client.latest_slam_pose}
             )
+        
+        if client.latest_saves is not None:
+            await websocket.send_json(
+                {"type": "saves", "saves": client.latest_saves}
+            )
 
         while True:
             message = await websocket.receive_json()
@@ -189,6 +224,17 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 if client.goal_topic is not None:
                     await client.goal_topic.post(datatypes.Vector(x, y, 0))
+            
+            elif message_type == "save":
+                await client.trigger_save()
+            
+            elif message_type == "load":
+                name = message.get("name", "")
+                if name:
+                    await client.trigger_load(name)
+            
+            elif message_type == "saves_list":
+                await client.trigger_saves_list()
 
     except WebSocketDisconnect:
         pass

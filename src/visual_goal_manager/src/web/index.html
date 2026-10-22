@@ -250,6 +250,133 @@
             font-weight: 600;
         }
 
+        /* ------------------------------------------------------------
+        * Saves modal
+        * ------------------------------------------------------------ */
+
+        .modal {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.55);
+            -webkit-backdrop-filter: blur(4px);
+            backdrop-filter: blur(4px);
+            z-index: 100;
+        }
+
+        .modal.hidden {
+            display: none;
+        }
+
+        .modal-content {
+            background: var(--panel-bg);
+            -webkit-backdrop-filter: blur(14px) saturate(140%);
+            backdrop-filter: blur(14px) saturate(140%);
+            border: 1px solid var(--panel-border);
+            border-radius: 14px;
+            box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5);
+            width: 90%;
+            max-width: 480px;
+            max-height: 75vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .modal-header {
+            display: flex;
+            align-items: center;
+            padding: 12px 16px;
+            background: rgba(255, 255, 255, 0.03);
+            border-bottom: 1px solid var(--panel-border);
+        }
+
+        .modal-title {
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+        }
+
+        .close-btn {
+            margin-left: auto;
+            padding: 2px 10px;
+            background: transparent;
+            border: 1px solid var(--panel-border);
+            border-radius: 6px;
+            color: var(--text);
+            cursor: pointer;
+            font-size: 18px;
+            line-height: 1;
+            box-shadow: none;
+        }
+
+        .modal-body {
+            padding: 14px 16px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .saves-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .saves-actions button {
+            flex: 1;
+        }
+
+        .saves-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .save-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 8px 12px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--panel-border);
+            border-radius: 8px;
+            transition: border-color 0.15s, background 0.15s;
+        }
+
+        .save-item:hover {
+            background: rgba(255, 255, 255, 0.06);
+            border-color: var(--panel-border-hover);
+        }
+
+        .save-name {
+            font-family: ui-monospace, "SF Mono", Consolas, monospace;
+            font-size: 12px;
+            color: var(--text);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex: 1;
+            min-width: 0;
+        }
+
+        .save-item .load-btn {
+            padding: 5px 12px;
+            font-size: 12px;
+            flex-shrink: 0;
+        }
+
+        .saves-empty {
+            padding: 24px;
+            text-align: center;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
         @media (max-width: 720px) {
             #controls button span {
                 display: none;
@@ -333,6 +460,15 @@
             <span>Fit map</span>
         </button>
 
+        <button onclick="openSavesModal()" title="Saved maps">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                <polyline points="17 21 17 13 7 13 7 21" />
+                <polyline points="7 3 7 8 15 8" />
+            </svg>
+            <span>Saves</span>
+        </button>
+
         <button onclick="clearGoal()" title="Remove the current goal">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round">
                 <circle cx="12" cy="12" r="9" />
@@ -345,6 +481,24 @@
 
     <div id="hint">
         <b>Scroll</b> to zoom &nbsp;·&nbsp; <b>Middle-drag</b> to pan &nbsp;·&nbsp; <b>Click</b> to set goal
+    </div>
+
+    <div id="saves-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <span class="modal-title">Saved Maps</span>
+                <button class="close-btn" onclick="closeSavesModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="saves-actions">
+                    <button class="primary" id="save-current-btn" onclick="saveCurrent()">
+                        Save current state
+                    </button>
+                    <button onclick="refreshSaves()">Refresh</button>
+                </div>
+                <div id="saves-list" class="saves-list"></div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -1885,6 +2039,11 @@
                 updateInfo();
             }
 
+            if (message.type === "saves") {
+                saves = message.saves || [];
+                if (savesModalOpen) renderSavesList();
+            }
+
             if (message.type === "map") {
                 mapData =
                     message.map;
@@ -2008,6 +2167,93 @@
                     cmdvel.angular.toFixed(3);
             }
         }
+
+        /* ============================================================
+        * SAVES / LOAD MODAL
+        * ============================================================ */
+
+        let saves = [];
+        let savesModalOpen = false;
+
+        function openSavesModal() {
+            savesModalOpen = true;
+            document.getElementById("saves-modal").classList.remove("hidden");
+            renderSavesList();
+            requestSavesList();
+        }
+
+        function closeSavesModal() {
+            savesModalOpen = false;
+            document.getElementById("saves-modal").classList.add("hidden");
+        }
+
+        function requestSavesList() {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({ type: "saves_list" }));
+            }
+        }
+
+        function refreshSaves() {
+            requestSavesList();
+        }
+
+        function saveCurrent() {
+            if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+            socket.send(JSON.stringify({ type: "save" }));
+
+            const btn = document.getElementById("save-current-btn");
+            if (btn) {
+                const original = btn.textContent;
+                btn.disabled = true;
+                btn.textContent = "Saving…";
+                setTimeout(() => {
+                    btn.disabled = false;
+                    btn.textContent = original;
+                }, 1500);
+            }
+        }
+
+        function loadSave(name) {
+            if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+            socket.send(JSON.stringify({ type: "load", name: name }));
+            closeSavesModal();
+        }
+
+        function renderSavesList() {
+            const container = document.getElementById("saves-list");
+            if (!container) return;
+
+            if (!saves || saves.length === 0) {
+                container.innerHTML = '<div class="saves-empty">No saves yet</div>';
+                return;
+            }
+
+            container.innerHTML = saves
+                .map(name => {
+                    // Экранируем одинарные кавычки, чтобы onclick не сломался
+                    const escaped = name.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+                    const safe = name.replace(/[<>&"]/g, c => ({
+                        "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;"
+                    }[c]));
+                    return `
+                        <div class="save-item">
+                            <span class="save-name" title="${safe}">${safe}</span>
+                            <button class="load-btn" onclick="loadSave('${escaped}')">Load</button>
+                        </div>
+                    `;
+                })
+                .join("");
+        }
+
+        document.getElementById("saves-modal").addEventListener("click", event => {
+            if (event.target.id === "saves-modal") closeSavesModal();
+        });
+
+        document.addEventListener("keydown", event => {
+            if (event.key === "Escape" && savesModalOpen) closeSavesModal();
+        });
 
         resizeCanvas();
     </script>

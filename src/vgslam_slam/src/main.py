@@ -2,7 +2,9 @@ import asyncio
 from queue import Empty
 import multiprocessing as mp
 
+import os
 import time
+import json
 from miniros_configurator import get_config
 from miniros import AsyncROSClient, datatypes, aparsedata
 from miniros_slam.source.datatypes import SLAMOffsetMap
@@ -33,6 +35,25 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
                 # shutdown signal
                 if scan is None:
                     break
+                
+                # save/load signal
+                if type(scan) is str:
+                    try:
+                        s = scan.split("|")
+                        t = s[0] # type
+                        
+                        if t == "save":
+                            mapper.save_to_file(s[1])
+                        
+                        elif t == "load":
+                            mapper = VGSLAM.load_from_file(s[1])
+
+                        else:
+                            print(f"unknown command: {t} ({s})", flush=True)
+                    except Exception as e:
+                        print(f"slam_worker: {e}", flush=True)
+                
+                    continue
 
                 x, y, theta, distances, angles = scan
 
@@ -147,6 +168,9 @@ class SLAMClient(AsyncROSClient):
         
         self._pos_version = 0
         self._map_version = 0
+        
+        self.saves_path = get_config("vgslam.saves_path")
+        os.makedirs(self.saves_path, exist_ok=True)
 
     def start_slam_process(self):
         self.running.set()
@@ -215,6 +239,35 @@ class SLAMClient(AsyncROSClient):
         self._odometry.append(data)
         self._odometry_event.set()
     
+    # anon message that sends anon reply message with
+    # list of saves in json format
+    #
+    # accepts a field for reply as an argument
+    @aparsedata(datatypes.String)
+    async def on_saves(self, data: str, from_node: str):
+        saves = os.listdir(self.saves_path)
+        await self.anon(
+            from_node,
+            data,
+            datatypes.String.encode(
+                json.dumps(saves)
+            )
+        )
+    
+    async def on_save(self, data: None, from_node: str):
+        fname = os.path.join(self.saves_path, f"save_{int(time.time())}.vgs")
+        self.scan_queue.put(f"save|{fname}")
+    
+    @aparsedata(datatypes.String)
+    async def on_load(self, data: str, from_node: str):
+        saves = os.listdir(self.saves_path)
+        
+        if data not in saves:
+            return
+        
+        fname = os.path.join(self.saves_path, data)
+        self.scan_queue.put(f"load|{fname}")
+    
     async def wait_for_odometry_at(self, ts: float, max_retries: int = 2):        
         for i, odom in enumerate(self._odometry):
             if odom.timestamp >= ts:
@@ -228,7 +281,6 @@ class SLAMClient(AsyncROSClient):
         self._odometry_event.clear()
 
         for _ in range(max_retries):
-            # TODO: check if it works
             try:
                 await asyncio.wait_for(
                     self._odometry_event.wait(),

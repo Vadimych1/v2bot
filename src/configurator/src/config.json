@@ -11,7 +11,8 @@
             "scan_queue_len": 5,
             "map_post_delay": 0.5,
             "pose_post_delay": 0.1
-        }
+        },
+        "saves_path": "vgslam_saves"
     },
     "yag-slam": {
         "seq_scan_matcher": {
@@ -114,7 +115,8 @@
             "min_linear_speed": -0.08,
             "max_angular_speed": 1.5,
             "max_linear_accel": 1.2,
-            "max_angular_accel": 4.5
+            "max_angular_accel": 4.5,
+            "min_viable_speed": 0.03
         },
         "time": {
             "delta": 0.2,

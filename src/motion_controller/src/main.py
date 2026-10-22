@@ -44,7 +44,7 @@ class MotionControllerConfig:
         self.weight_progress = get_config("motion_controller.weights.progress")
         self.weight_path = get_config("motion_controller.weights.path")
         self.obstacle_side_factor = get_config("motion_controller.weights.obstacle_side_factor")
-        
+        self.min_viable_speed = get_config("motion_controller.kinematics.min_viable_speed")
 
         self.goal_tolerance = get_config("motion_controller.goal_tolerance")
         self.lookahead_distance = get_config("motion_controller.lookahead_distance")
@@ -260,8 +260,6 @@ class MotionController(AsyncROSClient):
         
         return max(0.0, min(1.0, side + (1.0 - side) * dot))
     
-    # TODO: instead of returning float('inf') when too close to obstacle
-    # add a penetration_cost that will calculate how much we are stuck in the wall
     def _evaluate_trajectory(
         self, 
         states: list[tuple[float, float, float]], 
@@ -318,12 +316,10 @@ class MotionController(AsyncROSClient):
             tt = abs(v) / 0.1
             speed_cost += (1.0 - tt) * (1.0 - tt) * 0.1
 
-        # TODO: make something like that
-        # MIN_VIABLE_SPEED = 0.03
-        # if 1e-3 < abs(v) < MIN_VIABLE_SPEED:
-        #     speed_cost += 3.0 * (1.0 - abs(v) / MIN_VIABLE_SPEED)
+        min_viable_speed = self.config.min_viable_speed
+        if 1e-3 < abs(v) < min_viable_speed:
+            speed_cost += 3.0 * (1.0 - abs(v) / min_viable_speed)
 
-        # TODO: move min speeds to config 
         # stationary
         stationary_penalty = 0.0
         if abs(v) < 0.02 and abs(w) < 1e-3:
