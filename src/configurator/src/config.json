@@ -128,8 +128,10 @@
             "heading": 0.45,
             "distance": 0.35,
             "speed": 0.2,
-            "obstacle": 2.0,
-            "progress": 0.65
+            "obstacle": 1.5,
+            "progress": 1.2,
+            "path": 1.5,
+            "obstacle_side_factor": 0.4
         },
         "miniros": {
             "cmdvel_post_delay": 0.08
