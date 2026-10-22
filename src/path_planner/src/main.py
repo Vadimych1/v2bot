@@ -12,6 +12,7 @@ from miniros_slam.source.datatypes import SLAMOffsetMap
 from miniros.util.datatypes import TimedMovement3DoF, NumpyArray, Vector
 from miniros_configurator import get_config
 
+
 # spatial index for RRT*
 class _RRTIndex:
     __slots__ = ("rebuild_every", "_pos", "_kd", "_kd_size", "_pending")
@@ -116,6 +117,9 @@ class PathPlanner(AsyncROSClient):
         self.max_y = world["max_y"]
 
         self._obstacle_upper_threshold = get_config("obstacle_upper_threshold")
+        self._free_lower_threshold = get_config("free_lower_threshold")
+        self._allow_unknown = False
+        
         self._greedy_shortcut_max_lookahead = get_config(
             "path_planner.pathfinder.greedy_shortcut_max_lookahead"
         )
@@ -124,7 +128,7 @@ class PathPlanner(AsyncROSClient):
         if self.grid is None:
             return False
 
-        robot_r = int(np.ceil(self.robot_radius_m / self.resolution))
+        robot_r = int(math.ceil(self.robot_radius_m / self.resolution))
         kernel = cv.getStructuringElement(
             cv.MORPH_ELLIPSE, (2 * robot_r + 1, 2 * robot_r + 1)
         )
@@ -158,7 +162,6 @@ class PathPlanner(AsyncROSClient):
     def _is_free(self, pixel_point: tuple[int, int] | tuple[float, float]):
         px, py = pixel_point
         px, py = int(px), int(py)
-
         wx, wy = self._pixel_to_world((px, py))
 
         # if out-of-bounds, allow to move to at most +-d_width or +-d_height
@@ -183,10 +186,17 @@ class PathPlanner(AsyncROSClient):
         ):
             return True
 
-        if self.dilated_grid is not None:
-            return self.dilated_grid[py, px] >= 40
+        if self.dilated_grid is None:
+            return False
 
-        return False
+        val = self.dilated_grid[py, px]
+        if val < self._obstacle_upper_threshold:
+            return False
+        
+        if not self._allow_unknown and val < self._free_lower_threshold:
+            return False
+        
+        return True
 
     def _line_of_sight(
         self,
@@ -289,10 +299,13 @@ class PathPlanner(AsyncROSClient):
         step_size: float = 10.0,
         goal_tolerance: float = 10.0,
         search_radius_factor: float = 1.0,
+        allow_unknown: bool = False,
     ) -> list[tuple[float, float]] | None:
         """
         RRT* Pathfinding
         """
+        
+        self._allow_unknown = False
 
         if self.grid is None or self.start_pos is None or self.end_pos is None:
             return None
@@ -504,15 +517,28 @@ async def main():
             )
 
             if needs_rebuild:
-                build_start = time.time()
+                build_start = time.monotonic()
                 path = await asyncio.to_thread(
                     client.find_path,
                     max_iter=max_iter,
                     step_size=step_size,
                     goal_tolerance=goal_tolerance,
                     search_radius_factor=search_radius_factor,
+                    allow_unknown=False,
                 )
-                build_end = time.time()
+                build_end = time.monotonic()
+
+                if path is None:
+                    build_start = time.monotonic()
+                    path = await asyncio.to_thread(
+                        client.find_path,
+                        max_iter=max_iter,
+                        step_size=step_size,
+                        goal_tolerance=goal_tolerance,
+                        search_radius_factor=search_radius_factor,
+                        allow_unknown=True
+                    )
+                    build_end = time.monotonic()
 
                 k = 0
 
@@ -522,7 +548,8 @@ async def main():
                     k = 30
                     if failed >= 3:
                         await path_topic.post([])
-                        
+                        failed = 0
+                    
                     print(f"[] Failed path in {build_end - build_start} seconds")
 
                 else:
