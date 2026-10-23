@@ -101,16 +101,29 @@ class GoalManagerClient(AsyncROSClient):
         await self.broadcast({"type": "saves", "saves": saves})
 
     async def trigger_saves_list(self):
-        await self.anon("slam", "saves", datatypes.String.encode(
-            "savesreply"
-        ))
+        await self.anon(
+            "slam", 
+            "saves", 
+            datatypes.String.encode("savesreply"),
+            force_to_tcp=True,
+        )
     
     async def trigger_save(self):
-        await self.anon("slam", "save", b"")
+        await self.anon(
+            "slam", 
+            "save", 
+            b"!",
+            force_to_tcp=True,
+        )
         asyncio.create_task(self._refresh_saves_later(1.0))
     
     async def trigger_load(self, name: str):
-        await self.anon("slam", "load", datatypes.String.encode(name))
+        await self.anon(
+            "slam",
+            "load",
+            datatypes.String.encode(name),
+            force_to_tcp=True,
+        )
 
     async def _refresh_saves_later(self, delay: float):
         await asyncio.sleep(delay)

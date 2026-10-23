@@ -251,7 +251,8 @@ class SLAMClient(AsyncROSClient):
             data,
             datatypes.String.encode(
                 json.dumps(saves)
-            )
+            ),
+            force_to_tcp=True,
         )
     
     async def on_save(self, data: None, from_node: str):
@@ -377,7 +378,6 @@ async def main():
 
     async def run():
         await client.wait()
-        # await client.anon("lidar", "ping", b"hi")
 
     try:
         await asyncio.gather(
