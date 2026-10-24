@@ -1,6 +1,6 @@
 {
     "enable_stats": true,
-    "robot_radius": 0.25,
+    "robot_radius": 0.16,
     "obstacle_upper_threshold": 40,
     "free_lower_threshold": 200,
     "camera": {
@@ -80,19 +80,19 @@
     },
     "path_planner": {
         "world": {
-            "min_x": -5,
-            "min_y": -5,
-            "max_x": 10,
-            "max_y": 10
+            "min_x": -20,
+            "min_y": -20,
+            "max_x": 20,
+            "max_y": 20
         },
         "pathfinder": {
             "greedy_shortcut_max_lookahead": 4,
             "min_distance_to_rebuild": 1.0,
             "min_distance_between_goals": 0.2,
-            "max_iter": 2000,
+            "max_iter": 10000,
             "step_size_px": 6.0,
             "goal_tolerance_px": 7.0,
-            "search_radius_factor": 1.0,
+            "search_radius_factor": 1.5,
             "rrt_star_gamma": 50.0,
             "rrt_star_radius_floor": 1.5,
             "rrt_star_radius_cap": 8.0
@@ -109,7 +109,7 @@
             "baudrate": 115200
         },
         "robot": {
-            "track_distance": 0.189,
+            "track_distance": 0.18,
             "wheel_radius": 0.0189
         },
         "miniros": {
@@ -118,8 +118,8 @@
     },
     "motion_controller": {
         "kinematics": {
-            "max_linear_speed": 0.2,
-            "min_linear_speed": -0.2,
+            "max_linear_speed": 0.25,
+            "min_linear_speed": -0.25,
             "max_angular_speed": 2.0,
             "max_linear_accel": 1.5,
             "max_angular_accel": 6.0,
@@ -134,21 +134,21 @@
             "v_samples": 21
         },
         "weights": {
-            "heading": 1.05,
-            "distance": 0.28,
+            "heading": 1.2,
+            "distance": 0.36,
             "speed": 0.1,
-            "obstacle": 0.7,
-            "progress": 1.0,
-            "path": 0.87,
-            "obstacle_side_factor": 0.35
+            "obstacle": 0.42,
+            "progress": 1.05,
+            "path": 0.77,
+            "obstacle_side_factor": 0.32
         },
         "miniros": {
             "cmdvel_post_delay": 0.08
         },
-        "goal_tolerance": 0.2,
+        "goal_tolerance": 0.15,
         "lookahead_distance": 0.6,
+        "influence_distance_multiplier": 2.0,
         "odometry_max_age": 0.6,
-        "influence_distance_multiplier": 3.0,
         "map_max_age": 2
     },
     "lidar": {
