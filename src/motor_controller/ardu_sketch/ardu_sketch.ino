@@ -160,10 +160,17 @@ void loop() {
       return;
     }
 
+    // if delta time was too big - reset without update
     if (dt > 0.25) {
+      leftPrevError = 0;
+      rightPrevError = 0;
+      leftIntegral = 0;
+      rightIntegral = 0;
+
       lastLeftTicks = leftEnc.read();
       lastRightTicks = -rightEnc.read();
       lastMicros = now;
+      
       return;
     }
 
@@ -187,8 +194,10 @@ void loop() {
     float omega_enc = dThetaEnc / dt;
 
     // recalculate alpha value
-    if (labs(deltaLeft) > 0 || labs(deltaRight) > 0) {
+    if (deltaLeft != 0 || deltaRight != 0) {
       alpha = 0.98;
+    } else if (speedLeft != 0 || speedRight != 0) {
+      alpha = 0.8; // robot wont lose its rotation on too slow turns
     } else {
       alpha = 0;
     }
@@ -349,10 +358,10 @@ void motorControl(float dt, float dLeft, float dRight) {
   float leftErr = speedLeft - leftMeas;
   float rightErr = speedRight - rightMeas;
 
-  leftIntegral += leftErr * dt * 3;
+  leftIntegral += leftErr * dt;
   leftIntegral = constrain(leftIntegral, -PID_LIMIT / Ki, PID_LIMIT / Ki);
 
-  rightIntegral += rightErr * dt * 3;
+  rightIntegral += rightErr * dt;
   rightIntegral = constrain(rightIntegral, -PID_LIMIT / Ki, PID_LIMIT / Ki);
 
   static float leftDerivFilt = 0.0;
@@ -362,7 +371,7 @@ void motorControl(float dt, float dLeft, float dRight) {
   float rightDeriv = (rightErr - rightPrevError) / dt;
 
   leftDerivFilt = 0.7 * leftDerivFilt + 0.3 * leftDeriv;
-  rightDerivFilt = 0.7 * rightDerivFilt + 0.3 * leftDeriv;
+  rightDerivFilt = 0.7 * rightDerivFilt + 0.3 * rightDeriv;
 
   int leftPwm = (int)(Kp * leftErr + Ki * leftIntegral + Kd * leftDerivFilt);
   int rightPwm = (int)(Kp * rightErr + Ki * rightIntegral + Kd * rightDerivFilt);
