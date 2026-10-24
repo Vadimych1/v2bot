@@ -171,11 +171,16 @@ class MotionController(AsyncROSClient):
             
         return tuple(path[-1])
 
-    def _simulate_trajectory(self, v: float, w: float, x, y, theta):
+    def _simulate_trajectory(self, v: float, w: float, x, y, theta, goal_x, goal_y):
         states = []
         dt = self.config.dt
-        steps = max(1, round(self.config.predict_time / self.config.dt))
-
+        pred_time = self.config.predict_time
+        
+        dist_to_goal = math.hypot(x - goal_x, y - goal_y)
+        if dist_to_goal < 0.5:
+            pred_time *= 0.5
+            
+        steps = max(1, round(pred_time / dt))
         for _ in range(steps):
             if abs(w) > 1e-6:
                 x_new = x + (v/w) * (math.sin(theta + w*dt) - math.sin(theta))
@@ -303,18 +308,23 @@ class MotionController(AsyncROSClient):
         end_dist = math.hypot(states[-1][0] - target_x, states[-1][1] - target_y)
         progress_cost = -self.config.weight_progress * (start_dist - end_dist)
         
-        # TODO: check if we truly need this
         # distance
+        # dists_to_target = [math.hypot(state[0] - target_x, state[1] - target_y) for state in states]
+        # min_dist_to_target = min(dists_to_target)
+        
         dist_to_target = math.hypot(states[-1][0] - target_x, states[-1][1] - target_y)
-        dist_cost = self.config.weight_dist * (
-            dist_to_target / (self.config.lookahead_distance + 1.0)
-        )
+        dist_cost = self.config.weight_dist * (dist_to_target / (self.config.lookahead_distance + 1.0))
 
         # speed
-        speed_cost = -self.config.weight_speed * (v if v >= 0 else -v * 0.9)
-        if 0 < v < 0.1:
-            tt = abs(v) / 0.1
-            speed_cost += (1.0 - tt) * (1.0 - tt) * 0.1
+        # speed_cost = -self.config.weight_speed * (v if v >= 0 else -v * 0.9)
+        # if 0 < v < 0.1:
+        #     tt = abs(v) / 0.1
+        #     speed_cost += (1.0 - tt) * (1.0 - tt) * 0.1
+
+        if start_dist < 0.3:
+            speed_cost = 0.0
+        else:
+            speed_cost = self.config.weight_speed * (self.config.max_linear_speed - abs(v))
 
         min_viable_speed = self.config.min_viable_speed
         if 1e-3 < abs(v) < min_viable_speed:
@@ -323,7 +333,7 @@ class MotionController(AsyncROSClient):
         # stationary
         stationary_penalty = 0.0
         if abs(v) < 0.02 and abs(w) < 1e-3:
-            stationary_penalty = 1
+            stationary_penalty = 5.0
 
         # obstacle
         influence_distance = self.config.robot_radius * self.config.inf_mul + 0.15
@@ -390,7 +400,7 @@ class MotionController(AsyncROSClient):
         v = self.current_v
         w = self.current_w
 
-        if grid is None or path is None or len(path) == 0:
+        if grid is None or path is None or len(path) < 2:
             return 0.0, 0.0
 
         # if we are close to the target
@@ -451,7 +461,7 @@ class MotionController(AsyncROSClient):
         target = self._get_target_point(path, target_idx, x, y)
         for v in v_samples:
             for w in w_samples:
-                states = self._simulate_trajectory(v, w, x, y, theta)
+                states = self._simulate_trajectory(v, w, x, y, theta, *path[-1])
                 cost = self._evaluate_trajectory(states, target, v, w, 
                     obstacle_distance_map, resolution, of_x, of_y, 
                     width, height, x, y, path, target_idx)

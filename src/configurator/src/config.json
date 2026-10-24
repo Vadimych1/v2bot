@@ -118,29 +118,29 @@
     },
     "motion_controller": {
         "kinematics": {
-            "max_linear_speed": 0.35,
-            "min_linear_speed": -0.35,
-            "max_angular_speed": 1.5,
-            "max_linear_accel": 1.2,
-            "max_angular_accel": 4.5,
-            "min_viable_speed": 0.03
+            "max_linear_speed": 0.2,
+            "min_linear_speed": -0.2,
+            "max_angular_speed": 2.0,
+            "max_linear_accel": 1.5,
+            "max_angular_accel": 6.0,
+            "min_viable_speed": 0.06
         },
         "time": {
-            "delta": 0.2,
-            "prediction": 2
+            "delta": 0.1,
+            "prediction": 2.5
         },
         "sampling": {
-            "omega_samples": 31,
-            "v_samples": 11
+            "omega_samples": 21,
+            "v_samples": 21
         },
         "weights": {
-            "heading": 0.45,
-            "distance": 0.35,
-            "speed": 0.2,
-            "obstacle": 1.5,
-            "progress": 1.2,
-            "path": 1.5,
-            "obstacle_side_factor": 0.4
+            "heading": 1.05,
+            "distance": 0.28,
+            "speed": 0.1,
+            "obstacle": 0.7,
+            "progress": 1.0,
+            "path": 0.87,
+            "obstacle_side_factor": 0.35
         },
         "miniros": {
             "cmdvel_post_delay": 0.08
