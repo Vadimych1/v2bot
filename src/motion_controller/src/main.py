@@ -342,7 +342,7 @@ class MotionController(AsyncROSClient):
         step_mask[::2] = True
         
         clearance_sel = clearance[:, step_mask]
-        inside_sel =    inside[:,    step_mask]
+        # inside_sel =    inside[:,    step_mask]
         theta_sel =     theta_ks[:,  step_mask]
         px_sel =        px_c[:,      step_mask]
         py_sel =        py_c[:,      step_mask]
