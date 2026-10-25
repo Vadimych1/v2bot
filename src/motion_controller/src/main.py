@@ -321,7 +321,7 @@ class MotionController(AsyncROSClient):
         )
         min_viable = self.config.min_viable_speed
         small_v = (abs_v > 1e-3) & (abs_v < min_viable)
-        speed_cost = speed_cost + np.where(small_v, 3.0 * (1.0 - abs_v / min_viable), 0.0)
+        speed_cost = speed_cost + np.where(small_v, 0.8 * (1.0 - abs_v / min_viable), 0.0)
         
         stationary = (abs_v < 0.02) & (np.abs(W) < 1e-3)
         stationary_penalty = np.where(stationary, 5.0, 0.0)

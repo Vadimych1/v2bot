@@ -136,11 +136,11 @@
         "weights": {
             "heading": 0.7,
             "distance": 0.36,
-            "speed": 0.05,
-            "obstacle": 0.8,
-            "progress": 0.85,
+            "speed": 0.0,
+            "obstacle": 3.0,
+            "progress": 0.95,
             "path": 0.77,
-            "obstacle_side_factor": 0.6
+            "obstacle_side_factor": 0.5
         },
         "miniros": {
             "cmdvel_post_delay": 0.08
