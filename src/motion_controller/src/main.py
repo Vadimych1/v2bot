@@ -1,5 +1,6 @@
 from scipy.ndimage import distance_transform_edt, gaussian_filter
 import numpy as np
+import traceback
 import math
 import time
 
@@ -500,7 +501,7 @@ async def main():
             try:
                 v, w = await asyncio.to_thread(client.compute_control)
             except Exception as e:
-                print(f"compute_control failed: {e}", flush=True)
+                print(f"compute_control failed: {traceback.format_exception(e)}", flush=True)
                 v, w = 0.0, 0.0
             
             await cmdvel_topic.post(Vector(v, w, 0))
