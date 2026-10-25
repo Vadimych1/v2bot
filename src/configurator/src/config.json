@@ -1,6 +1,6 @@
 {
     "enable_stats": true,
-    "robot_radius": 0.16,
+    "robot_radius": 0.20,
     "obstacle_upper_threshold": 40,
     "free_lower_threshold": 200,
     "camera": {

@@ -127,16 +127,13 @@ class MotionController(AsyncROSClient):
             return False
 
         clearance = self._get_obstacle_distance(x, y, resolution, of_x, of_y, width, height, obstacle_distance_map)
-        return clearance <= self.config.robot_radius * 0.9
+        return clearance <= self.config.robot_radius
 
-    def _simulate_trajectory(self, v: float, w: float, x, y, theta, goal_x, goal_y):
+    def _simulate_trajectory(self, v: float, w: float, x, y, theta):
         states = []
         dt = self.config.dt
 
-        # dist_to_goal = math.hypot(x - goal_x, y - goal_y)
-
         pred_time = self.config.predict_time
-        # pred_time *= max(0.4, min(1.0, dist_to_goal / 1.0))
         
         steps = max(1, round(pred_time / dt))
         for _ in range(steps):
@@ -256,8 +253,6 @@ class MotionController(AsyncROSClient):
         ax, ay = path[target_seg_i]
         bx, by = path[target_seg_i + 1]
         path_heading = math.atan2(by - ay, bx - ax)
-        if v < 0:
-            path_heading = self._normalize_angle(path_heading + math.pi)
         
         heading_error = abs(self._normalize_angle(path_heading - movement_heading))
 
@@ -290,8 +285,8 @@ class MotionController(AsyncROSClient):
         if 1e-3 < abs(v) < min_viable_speed:
             speed_cost += 3.0 * (1.0 - abs(v) / min_viable_speed)
 
-        # angular speed
-        w_speed_cost = self.config.weight_speed * (self.config.max_angular_speed - abs(w))
+        # # angular speed
+        # w_speed_cost = self.config.weight_speed * (self.config.max_angular_speed - abs(w))
 
         # stationary
         stationary_penalty = 0.0
@@ -331,12 +326,12 @@ class MotionController(AsyncROSClient):
 
         # path
         _, seg_i, _ = self._project_on_path(path, robot_x, robot_y)
-        dev = self._path_deviation(robot_y, robot_x, path, seg_i)
-        path_cost = self.config.weight_path * dev
+        deviations = [self._path_deviation(sx, sy, path, seg_i) for sx, sy, _ in states]
+        path_cost = self.config.weight_path * (sum(deviations) / len(deviations))
 
         return heading_cost + dist_cost + speed_cost \
             + obstacle_cost + progress_cost + path_cost \
-            + stationary_penalty + w_speed_cost
+            + stationary_penalty
 
     def _normalize_angle(self, angle: float):
         return (angle + math.pi) % (2 * math.pi) - math.pi
@@ -458,7 +453,7 @@ class MotionController(AsyncROSClient):
         target_x, target_y, target_seg_i = self._target_from_proj(path, x, y)
         for v_cand in v_samples:
             for w_cand in w_samples:
-                states = self._simulate_trajectory(v_cand, w_cand, x, y, theta, *path[-1])
+                states = self._simulate_trajectory(v_cand, w_cand, x, y, theta)
                 cost = self._evaluate_trajectory(states, (target_x, target_y), v_cand, w_cand, obstacle_distance_map, resolution, of_x, of_y, width, height, x, y, path, target_seg_i, grad_x, grad_y)
 
                 if cost < best_cost:
@@ -531,22 +526,23 @@ class MotionController(AsyncROSClient):
         
         self.last_slam_pose = mov
         self.saved_odom_pose = self.last_odom_pose
+        self._last_odom_ts = time.monotonic()
     
-    @aparsedata(TimedMovement3DoF)
-    async def on_motorcontroller_odometry(self, odom):
-        self._last_odom_ts = odom.timestamp
-        self.last_odom_pose = odom.movement
+    # @aparsedata(TimedMovement3DoF)
+    # async def on_motorcontroller_odometry(self, odom):
+    #     self._last_odom_ts = time.monotonic()
+    #     self.last_odom_pose = odom.movement
         
-        if self.last_slam_pose is not None and self.saved_odom_pose != None:
-            anchor_slam = self.last_slam_pose
-            anchor_odom = self.saved_odom_pose
-            cur_odom = self.last_odom_pose
+    #     if self.last_slam_pose is not None and self.saved_odom_pose != None:
+    #         anchor_slam = self.last_slam_pose
+    #         anchor_odom = self.saved_odom_pose
+    #         cur_odom = self.last_odom_pose
             
-            self.robot_x = anchor_slam.x + (cur_odom.x - anchor_odom.x)
-            self.robot_y = anchor_slam.y + (cur_odom.y - anchor_odom.y)
-            self.robot_heading = self._normalize_angle(
-                anchor_slam.theta + self._normalize_angle(cur_odom.theta - anchor_odom.theta)
-            )
+    #         self.robot_x = anchor_slam.x + (cur_odom.x - anchor_odom.x)
+    #         self.robot_y = anchor_slam.y + (cur_odom.y - anchor_odom.y)
+    #         self.robot_heading = self._normalize_angle(
+    #             anchor_slam.theta + self._normalize_angle(cur_odom.theta - anchor_odom.theta)
+    #         )
 
     @aparsedata(Vector)
     async def on_motorcontroller_velocity(self, velocity: Vector):
