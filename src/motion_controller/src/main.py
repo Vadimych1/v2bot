@@ -136,7 +136,7 @@ class MotionController(AsyncROSClient):
         dist_to_goal = math.hypot(x - goal_x, y - goal_y)
 
         pred_time = self.config.predict_time
-        pred_time *= max(0.4, min(1.0, dist_to_goal / 1.0))
+        # pred_time *= max(0.4, min(1.0, dist_to_goal / 1.0))
         
         steps = max(1, round(pred_time / dt))
         for _ in range(steps):
@@ -290,10 +290,14 @@ class MotionController(AsyncROSClient):
         if 1e-3 < abs(v) < min_viable_speed:
             speed_cost += 3.0 * (1.0 - abs(v) / min_viable_speed)
 
+        # angular speed
+        w_speed_cost = self.config.weight_speed * (self.config.max_angular_speed - abs(w))
+
         # stationary
         stationary_penalty = 0.0
-        if abs(v) < 0.02 and abs(w) < 1e-3:
-            stationary_penalty = 5.0
+        w_dead = 0.10
+        if abs(v) < self.config.min_viable_speed and abs(w) < w_dead:
+            stationary_penalty = 5.0 * (1.0 - abs(w) / w_dead)
 
         # obstacle
         influence_distance = self.config.robot_radius * self.config.inf_mul + 0.15
@@ -336,7 +340,7 @@ class MotionController(AsyncROSClient):
 
         return heading_cost + dist_cost + speed_cost \
             + obstacle_cost + progress_cost + path_cost \
-            + stationary_penalty 
+            + stationary_penalty + w_speed_cost
 
     def _normalize_angle(self, angle: float):
         return (angle + math.pi) % (2 * math.pi) - math.pi
