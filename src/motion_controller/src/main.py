@@ -256,7 +256,6 @@ class MotionController(AsyncROSClient):
         V, W = np.meshgrid(v_samples, w_samples, indexing="ij")
         V = V.ravel()
         W = W.ravel()
-        N = V.size()
 
         dt = self.config.dt
         dist_to_goal = math.hypot(x - goal_x, y - goal_y)
