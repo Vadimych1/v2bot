@@ -1,4 +1,4 @@
-from scipy.ndimage import distance_transform_edt
+from scipy.ndimage import distance_transform_edt, gaussian_filter
 import numpy as np
 import math
 import time
@@ -87,6 +87,8 @@ class MotionController(AsyncROSClient):
             "offset_y": 0,
             "resolution": 1,
             "obstacle_distance_map": None,
+            "grad_x": None,
+            "grad_y": None,
         }
         
         # current pose, meters and radians
@@ -104,14 +106,13 @@ class MotionController(AsyncROSClient):
 
         # global path from path_planner
         self.global_path = None
-        self.target_idx = 0
 
         self._obstacle_upper_threshold = get_config("obstacle_upper_threshold")
 
         self._last_map_ts = -1
         self._last_odom_ts = -1
         
-        self._last_cmd_time = time.monotonic()
+        self._last_cmd_time = None
         
         self._edt_busy = False
 
@@ -121,264 +122,70 @@ class MotionController(AsyncROSClient):
 
         return px, py
 
-    def _is_collision(self, x: float, y: float, obstacle_distance_map, resolution, of_x, of_y, width, height):
-        if obstacle_distance_map is None:
-            return False
-
-        clearance = self._get_obstacle_distance(x, y, resolution, of_x, of_y, width, height, obstacle_distance_map)
-        return clearance <= self.config.robot_radius
-
-    def _find_closest_path_idx(self, path, robot_x, robot_y):
-        if path is None:
-            return 0
-
-        min_dist = float("inf")
-        idx = 0
-        for i, (px, py) in enumerate(path):
-            d = math.hypot(px - robot_x, py - robot_y)
-            if d < min_dist:
-                min_dist = d
-                idx = i
-
-        return idx
-
-    def _get_target_point(self, path, target_idx, x, y):
-        if path is None or len(path) == 0:
-            return x, y
-
-        cumulative_dist = 0.0
-        idx = target_idx
-        while idx < len(path) - 1:
-            px, py = path[idx]
-            nx, ny = path[idx + 1]
-
-            seg_dist = math.hypot(nx - px, ny - py)
-
-            if cumulative_dist + seg_dist >= self.config.lookahead_distance:
-                frac = (
-                    (self.config.lookahead_distance - cumulative_dist) / seg_dist
-                    if seg_dist > 0
-                    else 0
-                )
-
-                target_x = px + frac * (nx - px)
-                target_y = py + frac * (ny - py)
-
-                return target_x, target_y
-
-            cumulative_dist += seg_dist
-            idx += 1
-            
-        return tuple(path[-1])
-
-    def _simulate_trajectory(self, v: float, w: float, x, y, theta, goal_x, goal_y):
-        states = []
-        dt = self.config.dt
-        pred_time = self.config.predict_time
-        
-        dist_to_goal = math.hypot(x - goal_x, y - goal_y)
-        if dist_to_goal < 0.5:
-            pred_time *= 0.5
-            
-        steps = max(1, round(pred_time / dt))
-        for _ in range(steps):
-            if abs(w) > 1e-6:
-                x_new = x + (v/w) * (math.sin(theta + w*dt) - math.sin(theta))
-                y_new = y - (v/w) * (math.cos(theta + w*dt) - math.cos(theta))
-            else:
-                x_new = x + v * math.cos(theta) * dt
-                y_new = y + v * math.sin(theta) * dt
-            x, y = x_new, y_new
-            theta += w * dt
-
-            states.append((x, y, theta))
-
-        return states
-
     def _get_obstacle_distance(self, x: float, y: float, resolution, of_x, of_y, width, height, obstacle_distance_map):
         if obstacle_distance_map is None:
             return 0.0
 
         px, py = self._world_to_pixel(x, y, resolution, of_x, of_y)
 
-        # Outside the map is considered a collision.
+        # outside the map is considered a collision
         if px < 0 or px >= width or py < 0 or py >= height:
             return 0.0
 
         return obstacle_distance_map[py, px]
-    
-    def _path_deviation(self, x: float, y: float, path, start_idx, max_lookahead: int = 20) -> float:
-        if path is None or len(path) < 2:
-            return 0.0
-        
-        start_idx = max(0, min(start_idx, len(path) - 2))
-        end = min(len(path) - 1, start_idx + max_lookahead)
-        
-        # return distance to the end
-        if end <= start_idx:
-            ax, ay = path[start_idx]
-            return math.hypot(x - ax, y - ay)
 
-        best = float('inf')
-        for i in range(start_idx, end):
+    def _normalize_angle(self, angle: float):
+        return (angle + math.pi) % (2 * math.pi) - math.pi
+
+    def _project_on_path(self, path, x, y):
+        best = (float('inf'), 0, 0.0) # dist, seg_idx, dot
+        for i in range(len(path) - 1):
             ax, ay = path[i]
             bx, by = path[i + 1]
-            dx = bx - ax
-            dy = by - ay
+            dx, dy = bx - ax, by - ay
             
             seg2 = dx * dx + dy * dy
             if seg2 < 1e-9:
                 d = math.hypot(x - ax, y - ay)
+                t = 0.0
+            
             else:
-                t = ((x - ax) * dx + (y - ay) * dy) / seg2
-                t = max(0.0, min(1.0, t))
+                t = max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / seg2))
                 d = math.hypot(x - (ax + t * dx), y - (ay + t * dy))
             
-            if d < best:
-                best = d
+            if d < best[0]:
+                best = (d, i, t)
         
         return best
-
-    def _directional_factor(self, x: float, y: float, vx: float, vy: float, obstacle_distance_map, resolution, of_x, of_y, width, height) -> float:
-        px, py = self._world_to_pixel(x, y, resolution, of_x, of_y)
-        if px < 1 or px >= width - 1 or py < 1 or py >= height - 1:
-            return 1.0
-        
-        gx = obstacle_distance_map[py, px + 1] - obstacle_distance_map[py, px - 1]
-        gy = obstacle_distance_map[py + 1, px] - obstacle_distance_map[py - 1, px]
-        gn = math.hypot(gx, gy)
-        if gn < 1e-6:
-            return 1.0
-        
-        gx /= gn
-        gy /= gn
-        
-        vn = math.hypot(vx, vy)
-        if vn < 1e-6:
-            return 1.0
-        
-        ux = vx / vn
-        uy = vy / vn
-        
-        dot = -(gx * ux + gy * uy)
-        side = self.config.obstacle_side_factor
-        
-        return max(0.0, min(1.0, side + (1.0 - side) * dot))
     
-    def _evaluate_trajectory(
-        self, 
-        states: list[tuple[float, float, float]], 
-        target, 
-        v: float,
-        w: float,
-        obstacle_distance_map, 
-        resolution, 
-        of_x, 
-        of_y, 
-        width, 
-        height,
-        robot_x,
-        robot_y,
-        path,
-        path_start_idx,
-    ):
-        if len(states) <= 0 or obstacle_distance_map is None:
-            return float("inf")
-
-        for x, y, _ in states:
-            if self._is_collision(x, y, obstacle_distance_map, resolution, of_x, of_y, width, height):
-                return float("inf")
-
-        target_x, target_y = target
-        dx = target_x - states[-1][0]
-        dy = target_y - states[-1][1]
-        angle_to_target = math.atan2(dy, dx)
+    def _target_from_proj(self, path, x, y):
+        _, seg_i, t = self._project_on_path(path, x, y)
         
-        if v >= 0:
-            movement_heading = states[-1][2]
-        else:
-            movement_heading = states[-1][2] + math.pi
-
-        # heading
-        heading_error = abs(self._normalize_angle(angle_to_target - movement_heading))
-        heading_cost = self.config.weight_heading * heading_error
-
-        # progress
-        start_dist = math.hypot(robot_x - target_x, robot_y - target_y)
-        end_dist = math.hypot(states[-1][0] - target_x, states[-1][1] - target_y)
-        progress_cost = -self.config.weight_progress * (start_dist - end_dist)
+        ax, ay = path[seg_i]
+        bx, by = path[seg_i + 1]
         
-        # distance
-        # dists_to_target = [math.hypot(state[0] - target_x, state[1] - target_y) for state in states]
-        # min_dist_to_target = min(dists_to_target)
+        px, py = ax + t * (bx - ax), ay + t * (by - ay)
+        remaining = self.config.lookahead_distance
         
-        dist_to_target = math.hypot(states[-1][0] - target_x, states[-1][1] - target_y)
-        dist_cost = self.config.weight_dist * (dist_to_target / (self.config.lookahead_distance + 1.0))
-
-        # speed
-        # speed_cost = -self.config.weight_speed * (v if v >= 0 else -v * 0.9)
-        # if 0 < v < 0.1:
-        #     tt = abs(v) / 0.1
-        #     speed_cost += (1.0 - tt) * (1.0 - tt) * 0.1
-
-        if start_dist < 0.3:
-            speed_cost = 0.0
-        else:
-            speed_cost = self.config.weight_speed * (self.config.max_linear_speed - abs(v))
-
-        min_viable_speed = self.config.min_viable_speed
-        if 1e-3 < abs(v) < min_viable_speed:
-            speed_cost += 3.0 * (1.0 - abs(v) / min_viable_speed)
-
-        # stationary
-        stationary_penalty = 0.0
-        if abs(v) < 0.02 and abs(w) < 1e-3:
-            stationary_penalty = 5.0
-
-        # obstacle
-        influence_distance = self.config.robot_radius * self.config.inf_mul + 0.15
-        obstacle_cost = 0.0
+        seg_left = math.hypot(bx - px, by - py)
+        if seg_left >= remaining:
+            f = remaining / seg_left if seg_left > 0 else 0
+            return px + f * (bx - px), py + f * (by - py), seg_i
         
-        sign = 1.0 if v >= 0 else -1.0
-        obstacle_cost = 0.0
-        n = len(states)
+        remaining -= seg_left
         
-        for i, (x, y, theta_i) in enumerate(states):
-            if i % 2 == 1:
-                continue
-
-            clearance = self._get_obstacle_distance(x, y, resolution, of_x, of_y, width, height, obstacle_distance_map)
-            if clearance > influence_distance:
-                continue
+        for i in range(seg_i + 1, len(path) - 1):
+            ax, ay = path[i]
+            bx, by = path[i + 1]
+            sl = math.hypot(bx - ax, by - ay)
             
-            vx = sign * math.cos(theta_i)
-            vy = sign * math.sin(theta_i)
+            if sl >= remaining:
+                f = remaining / sl if sl > 0 else 0
+                return ax + f * (bx - ax), ay + f * (by - ay), i
             
-            dir_factor = self._directional_factor(
-                x, y, vx, vy,
-                obstacle_distance_map, resolution, of_x, of_y, width, height,
-            )
-
-            normalized = (influence_distance - clearance) / influence_distance
-            local_cost = normalized * normalized * dir_factor
-            temporal_weight = (i + 1) / n
-            obstacle_cost += local_cost * temporal_weight
-
-        obstacle_cost *= self.config.weight_obstacle
-
-        # path
-        path_cost = 0.0
-        if path is not None and len(path) > 1:
-            ex, ey, _ = states[-1]
-            dev = self._path_deviation(ex, ey, path, path_start_idx)
-            path_cost = self.config.weight_path * dev
-
-        return heading_cost + dist_cost + speed_cost \
-            + obstacle_cost + progress_cost + path_cost \
-            + stationary_penalty 
-
-    def _normalize_angle(self, angle: float):
-        return (angle + math.pi) % (2 * math.pi) - math.pi
+            remaining -= sl
+        
+        return path[-1][0], path[-1][1], len(path) - 2
 
     def compute_control(self):
         snap = self._map_snapshot
@@ -390,9 +197,10 @@ class MotionController(AsyncROSClient):
         resolution = snap["resolution"]
         of_x = snap["offset_x"]
         of_y = snap["offset_y"]
+        grad_x = snap["grad_x"]
+        grad_y = snap["grad_y"]
         
         path = self.global_path
-        target_idx = self.target_idx
         
         x = self.robot_x
         y = self.robot_y
@@ -403,91 +211,195 @@ class MotionController(AsyncROSClient):
         if grid is None or path is None or len(path) < 2:
             return 0.0, 0.0
 
-        # if we are close to the target
-        last_x, last_y = path[-1]
-        if math.hypot(x - last_x, y - last_y) < self.config.goal_tolerance:
+        goal_x = float(path[-1][0])
+        goal_y = float(path[-1][1])
+
+        if math.hypot(x - goal_x, y - goal_y) < self.config.goal_tolerance:
             return 0.0, 0.0
 
-        if target_idx < len(path) - 1:
-            closest_idx = self._find_closest_path_idx(path, x, y)
-
-            if closest_idx > target_idx:
-                target_idx = closest_idx
-
-            target_x, target_y = path[target_idx]
-
-            if math.hypot(target_x - x, target_y - y) < self.config.goal_tolerance:
-                target_idx += 1
-                if target_idx >= len(path):
-                    target_idx = len(path) - 1
-
-        self.target_idx = target_idx
-
+        # DWA
         now = time.monotonic()
-        control_dt = min(0.5, max(1e-3, now - self._last_cmd_time))
+        control_dt = 0.05 if self._last_cmd_time is None else min(0.5, max(1e-3, now - self._last_cmd_time))
         self._last_cmd_time = now
         
-        v_min = max(
-            self.config.min_linear_speed,
-            v - self.config.max_linear_accel * control_dt,
-        )
-        v_max = min(
-            self.config.max_linear_speed,
-            v + self.config.max_linear_accel * control_dt,
-        )
-
-        w_min = max(
-            -self.config.max_angular_speed,
-            w - self.config.max_angular_accel * control_dt,
-        )
-        w_max = min(
-            self.config.max_angular_speed,
-            w + self.config.max_angular_accel * control_dt,
-        )
+        v_min = max(self.config.min_linear_speed, v - self.config.max_linear_accel * control_dt)
+        v_max = min(self.config.max_linear_speed, v + self.config.max_linear_accel * control_dt)
+        w_min = max(-self.config.max_angular_speed, w - self.config.max_angular_accel * control_dt)
+        w_max = min(self.config.max_angular_speed, w + self.config.max_angular_accel * control_dt)
 
         v_samples = np.linspace(v_min, v_max, self.config.num_v_samples)
         w_samples = np.linspace(w_min, w_max, self.config.num_w_samples)
 
-        # normal trajectory
-        best_cost = float("inf")
-        best_v = 0.0
-        best_w = 0.0
+        target_x, target_y, target_seg_i = self._target_from_proj(path, x, y)
+
+        ax, ay = path[target_seg_i]
+        bx, by = path[target_seg_i + 1]
+        path_heading_fwd = math.atan2(by - ay, bx - ax)
+
+        window_lo = max(0, target_seg_i - 5)
+        window_hi = min(len(path) - 1, target_seg_i + 20)
+        if window_hi <= window_lo:
+            window_lo = max(0, target_seg_i)
+            window_hi = min(len(path) - 1, window_lo + 1)
+
+        seg_ax = np.array([path[i][0] for i in range(window_lo, window_hi)], dtype=np.float64)
+        seg_ay = np.array([path[i][1] for i in range(window_lo, window_hi)], dtype=np.float64)
+        seg_bx = np.array([path[i + 1][0] for i in range(window_lo, window_hi)], dtype=np.float64)
+        seg_by = np.array([path[i + 1][1] for i in range(window_lo, window_hi)], dtype=np.float64)
+
+        seg_dx = seg_bx - seg_ax
+        seg_dy = seg_by - seg_ay
+        seg2 = seg_dx * seg_dx + seg_dy * seg_dy
+        seg2_safe = np.where(seg2 < 1e-9, 1e-9, seg2)
         
-        # penetration trajectory
-        best_pen = float("inf")
-        best_pen_v = 0.0
-        best_pen_w = 0.0
+        V, W = np.meshgrid(v_samples, w_samples, indexing="ij")
+        V = V.ravel()
+        W = W.ravel()
+        N = V.size()
 
-        target = self._get_target_point(path, target_idx, x, y)
-        for v in v_samples:
-            for w in w_samples:
-                states = self._simulate_trajectory(v, w, x, y, theta, *path[-1])
-                cost = self._evaluate_trajectory(states, target, v, w, 
-                    obstacle_distance_map, resolution, of_x, of_y, 
-                    width, height, x, y, path, target_idx)
+        dt = self.config.dt
+        dist_to_goal = math.hypot(x - goal_x, y - goal_y)
+        pred_time = self.config.predict_time * max(0.4, min(1.0, dist_to_goal / 1.0))
+        steps = max(1, round(pred_time / dt))
+        t_k = np.arange(1, steps + 1) * dt
+        
+        theta_ks = theta + W[:, None] * t_k[None, :]
+        cos_t0 = math.cos(theta)
+        sin_t0 = math.sin(theta)
+        
+        # straight paths (w ~ 0)
+        x_straight = x + V[:, None] * t_k[None, :] * cos_t0
+        y_straight = y + V[:, None] * t_k[None, :] * sin_t0
 
-                if cost < best_cost:
-                    best_cost = cost
-                    best_v = v
-                    best_w = w
-                
-                # if on current step all the costs were inf
-                if best_cost == float("inf"):
-                    pen = 0.0
-                    for sx, sy, _ in states:
-                        c = self._get_obstacle_distance(sx, sy, resolution, of_x, of_y, width, height, obstacle_distance_map)
-                        if c < self.config.robot_radius:
-                            pen += self.config.robot_radius - c
-                    
-                    if pen < best_pen:
-                        best_pen = pen
-                        best_pen_v, best_pen_w = v, w
+        # curved paths (w != 0)
+        mask_w0 = np.abs(W) < 1e-6
+        W_safe = np.where(mask_w0, 1e-6, W)
+        
+        ratio = V / W_safe
+        x_curved = x + ratio[:, None] * (np.sin(theta_ks) - sin_t0)
+        y_curved = y + ratio[:, None] * (np.cos(theta_ks) - cos_t0)
+        
+        m = mask_w0[:, None]
+        x_ks = np.where(m, x_straight, x_curved)
+        y_ks = np.where(m, y_straight, y_curved)
+        
+        px = np.floor(x_ks / resolution + of_x).astype(np.int32)
+        py = np.floor(y_ks / resolution + of_y).astype(np.int32)
+        inside = (px >= 0) & (px < width) & (py >= 0) & (py < height)
+        
+        px_c = np.clip(px, 0, width - 1)
+        py_c = np.clip(py, 0, height - 1)
+        
+        # collision
+        clearance = np.where(inside, obstacle_distance_map[py_c, px_c], 0.0)
+        coll_thresh = self.config.robot_radius * 0.9
+        collided = np.any(clearance <= coll_thresh, axis=1)
+        
+        # heading
+        x_K = x_ks[:, -1]
+        y_K = y_ks[:, -1]
+        theta_K = theta_ks[:, -1]
+        
+        movement_heading = np.where(V >= 0, theta_K, theta_K + math.pi)
+        mh_n = (movement_heading + np.pi) % (2 * np.pi) - np.pi
+        
+        if path_heading_fwd is not None:
+            ph = np.where(V >= 0, path_heading_fwd, path_heading_fwd + np.pi)
+            ph_n = (ph + np.pi) % (2 * np.pi) - np.pi
+            heading_err = np.abs((ph_n - mh_n + np.pi) % (2 * np.pi) - np.pi)
+        
+        else:
+            at = np.arctan2(target_y - y_K, target_x - x_K)
+            at_n = (at + np.pi) % (2 * np.pi) - np.pi
+            heading_err = np.abs((at_n - mh_n + np.pi) % (2 * np.pi) - np.pi)
+        
+        heading_cost = self.config.weight_heading * heading_err
+        
+        # progress & distance
+        start_dist = math.hypot(x - target_x, y - target_y)
+        end_dist = np.hypot(x_K - target_x, y_K - target_y)
+        progress_cost = -self.config.weight_progress * (start_dist - end_dist)
+        dist_cost = self.config.weight_dist * (end_dist / (self.config.lookahead_distance + 1.0))
+        
+        # speed cost & stationary penalty
+        abs_v = np.abs(V)
+        speed_cost = np.where(
+            start_dist < 0.3, 0.0,
+            self.config.weight_speed * (self.config.max_linear_speed - abs_v),
+        )
+        min_viable = self.config.min_viable_speed
+        small_v = (abs_v > 1e-3) & (abs_v < min_viable)
+        speed_cost = speed_cost + np.where(small_v, 3.0 * (1.0 - abs_v / min_viable), 0.0)
+        
+        stationary = (abs_v < 0.02) & (np.abs(W) < 1e-3)
+        stationary_penalty = np.where(stationary, 5.0, 0.0)
+        
+        # obstacle cost
+        influence_distance = self.config.robot_radius * self.config.inf_mul + 0.15
+        sign = np.where(V >= 0, 1.0, -1.0)
+        
+        step_mask = np.zeros(steps, dtype=bool)
+        step_mask[::2] = True
+        
+        clearance_sel = clearance[:, step_mask]
+        inside_sel =    inside[:,    step_mask]
+        theta_sel =     theta_ks[:,  step_mask]
+        px_sel =        px_c[:,      step_mask]
+        py_sel =        py_c[:,      step_mask]
 
-        # instead of just standing still find the least-penetration trajectory
-        if best_cost == float("inf"):
-            return best_pen_v, best_pen_w
+        gx = grad_x[py_sel, px_sel]
+        gy = grad_y[py_sel, px_sel]
+        gn = np.hypot(gx, gy)
+        gn_safe = np.where(gn < 1e-6, 1.0, gn)
+        gx_n = gx / gn_safe
+        gy_n = gy / gn_safe
+        
+        vx = sign[:, None] * np.cos(theta_sel)
+        vy = sign[:, None] * np.sin(theta_sel)
+        dot = -(gx_n * vx + gy_n * vy)
+        
+        side = self.config.obstacle_side_factor
+        dir_factor = np.clip(side + (1.0 - side) * dot, 0.0, 1.0)
+        dir_factor = np.where(gn < 1e-6, 1.0, dir_factor)
+        
+        in_influence = clearance_sel <= influence_distance
+        normalized = np.where(in_influence, (influence_distance - clearance_sel) / influence_distance, 0.0)
+        obstacle_cost = self.config.weight_obstacle * np.sum(normalized * normalized * dir_factor, axis=1)
+        
+        # path cost
+        tx = x_K[:, None] - seg_ax[None, :]
+        ty = y_K[:, None] - seg_ay[None, :]
 
-        return best_v, best_w
+        t_param = (tx * seg_dx[None, :] + ty * seg_dy[None, :]) / seg2_safe[None, :]
+        t_param = np.clip(t_param, 0.0, 1.0)
+
+        cx = seg_ax[None, :] + t_param * seg_dx[None, :]
+        cy = seg_ay[None, :] + t_param * seg_dy[None, :]
+
+        dists = np.hypot(x_K[:, None] - cx, y_K[:, None] - cy)
+        path_dev = np.min(dists, axis=1)
+        path_cost = self.config.weight_path * path_dev
+        
+        total_cost = (
+            heading_cost + dist_cost + speed_cost + obstacle_cost
+            + progress_cost + path_cost + stationary_penalty
+        )
+        total_cost = np.where(collided, np.inf, total_cost)
+        
+        if np.any(np.isfinite(total_cost)):
+            best = int(np.argmin(total_cost))
+            return float(V[best]), float(W[best])
+        
+        # fallback if all costs were inf
+        start_c = self._get_obstacle_distance(x, y, resolution, of_x, of_y, width, height, obstacle_distance_map)
+        pen = np.sum(np.maximum(0.0, self.config.robot_radius - clearance), axis=1)
+        end_c = clearance[:, -1]
+        escape_reward = end_c - start_c
+        score = pen - 2.0 * escape_reward + 0.5 * heading_err
+
+        best = int(np.argmin(score))
+
+        return float(V[best]), float(W[best])
 
     @aparsedata(SLAMOffsetMap)
     async def on_slam_map(self, map):  # SLAMOffsetMap
@@ -500,6 +412,9 @@ class MotionController(AsyncROSClient):
             obstacles = map.grid < self._obstacle_upper_threshold
             euc = (await asyncio.to_thread(distance_transform_edt, ~obstacles)).astype(np.float32)
             euc *= map.resolution
+            
+            gau = gaussian_filter(euc, sigma=1.0)
+            gy, gx = np.gradient(gau, map.resolution)
 
             # single atomic swap
             self._map_snapshot = {
@@ -510,6 +425,8 @@ class MotionController(AsyncROSClient):
                 "offset_y": map.offset_y,
                 "resolution": map.resolution,
                 "obstacle_distance_map": euc,
+                "grad_x": gx,
+                "grad_y": gy,
             }
             self._last_map_ts = time.time()
         
@@ -550,7 +467,6 @@ class MotionController(AsyncROSClient):
 
     @aparsedata(NumpyArray)
     async def on_pathplanner_globalpath(self, path: np.ndarray):
-        self.target_idx = 0
         self.global_path = path
 
 

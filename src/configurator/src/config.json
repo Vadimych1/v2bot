@@ -134,13 +134,13 @@
             "v_samples": 21
         },
         "weights": {
-            "heading": 1.2,
+            "heading": 0.7,
             "distance": 0.36,
-            "speed": 0.1,
-            "obstacle": 0.42,
-            "progress": 1.05,
+            "speed": 0.05,
+            "obstacle": 0.8,
+            "progress": 0.85,
             "path": 0.77,
-            "obstacle_side_factor": 0.32
+            "obstacle_side_factor": 0.6
         },
         "miniros": {
             "cmdvel_post_delay": 0.08

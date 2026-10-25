@@ -26,7 +26,7 @@
 
 // hardware constants
 const float WHEEL_RADIUS = 0.0189;
-const float WHEEL_BASE = 0.198;
+const float WHEEL_BASE = 0.18;
 
 // this value depends on motor
 // how to measure this:
@@ -59,8 +59,8 @@ float speedLeft = 0.0, speedRight = 0.0;
 
 // PID constants
 const float Kp = 10.0; // TODO: tune this
-const float Ki = 10.0; // TODO: tune this
-const float Kd = 0.1;  // TODO: tune this
+const float Ki = 20.0; // TODO: tune this
+const float Kd = 0.01;  // TODO: tune this
 const float PID_LIMIT = 255.0;
 
 // PID variables
