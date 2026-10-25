@@ -133,7 +133,7 @@ class MotionController(AsyncROSClient):
         states = []
         dt = self.config.dt
 
-        dist_to_goal = math.hypot(x - goal_x, y - goal_y)
+        # dist_to_goal = math.hypot(x - goal_x, y - goal_y)
 
         pred_time = self.config.predict_time
         # pred_time *= max(0.4, min(1.0, dist_to_goal / 1.0))
@@ -330,13 +330,9 @@ class MotionController(AsyncROSClient):
         obstacle_cost *= self.config.weight_obstacle
 
         # path
-        path_cost = 0.0
-        if path is not None and len(path) > 1:
-            ex, ey, _ = states[-1]
-            _, seg_i, _ = self._project_on_path(path, robot_x, robot_y)
-            
-            dev = self._path_deviation(ex, ey, path, seg_i)
-            path_cost = self.config.weight_path * dev
+        _, seg_i, _ = self._project_on_path(path, robot_x, robot_y)
+        dev = self._path_deviation(robot_y, robot_x, path, seg_i)
+        path_cost = self.config.weight_path * dev
 
         return heading_cost + dist_cost + speed_cost \
             + obstacle_cost + progress_cost + path_cost \
