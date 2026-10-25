@@ -356,7 +356,7 @@ class MotionController(AsyncROSClient):
         
         in_influence = clearance_sel <= influence_distance
         normalized = np.where(in_influence, (influence_distance - clearance_sel) / influence_distance, 0.0)
-        obstacle_cost = self.config.weight_obstacle * np.sum(normalized * normalized * dir_factor, axis=1)
+        obstacle_cost = self.config.weight_obstacle * np.mean(normalized * normalized * dir_factor, axis=1)
         
         # path cost
         tx = x_K[:, None] - seg_ax[None, :]
