@@ -300,19 +300,11 @@ class MotionController(AsyncROSClient):
         y_K = y_ks[:, -1]
         theta_K = theta_ks[:, -1]
         
-        movement_heading = np.where(V >= 0, theta_K, theta_K + math.pi)
-        mh_n = (movement_heading + np.pi) % (2 * np.pi) - np.pi
+        target_facing = np.where(V >= 0, path_heading_fwd, path_heading_fwd + np.pi)
+        tf_n = (target_facing + np.pi) % (2 * np.pi) - np.pi
+        theta_n = (theta_K + np.pi) % (2 * np.pi) - np.pi
         
-        if path_heading_fwd is not None:
-            ph = np.where(V >= 0, path_heading_fwd, path_heading_fwd + np.pi)
-            ph_n = (ph + np.pi) % (2 * np.pi) - np.pi
-            heading_err = np.abs((ph_n - mh_n + np.pi) % (2 * np.pi) - np.pi)
-        
-        else:
-            at = np.arctan2(target_y - y_K, target_x - x_K)
-            at_n = (at + np.pi) % (2 * np.pi) - np.pi
-            heading_err = np.abs((at_n - mh_n + np.pi) % (2 * np.pi) - np.pi)
-        
+        heading_err = np.abs((tf_n - theta_n + np.pi) % (2 * np.pi) - np.pi)
         heading_cost = self.config.weight_heading * heading_err
         
         # progress & distance
