@@ -130,8 +130,8 @@
             "prediction": 2.5
         },
         "sampling": {
-            "omega_samples": 21,
-            "v_samples": 21
+            "omega_samples": 9,
+            "v_samples": 9
         },
         "weights": {
             "heading": 1.2,
@@ -140,7 +140,8 @@
             "obstacle": 0.42,
             "progress": 1.05,
             "path": 0.77,
-            "obstacle_side_factor": 0.32
+            "obstacle_side_factor": 0.32,
+            "decision_deviation": 0.8
         },
         "miniros": {
             "cmdvel_post_delay": 0.08

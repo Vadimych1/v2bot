@@ -1,5 +1,7 @@
 from scipy.ndimage import distance_transform_edt, gaussian_filter
 import numpy as np
+import cv2 as cv
+import skfmm
 import math
 import time
 
@@ -43,6 +45,8 @@ class MotionControllerConfig:
         self.weight_obstacle = get_config("motion_controller.weights.obstacle")
         self.weight_progress = get_config("motion_controller.weights.progress")
         self.weight_path = get_config("motion_controller.weights.path")
+        self.weight_decision_deviation = get_config("motion_controller.weights.decision_deviation")
+        
         self.obstacle_side_factor = get_config("motion_controller.weights.obstacle_side_factor")
         self.min_viable_speed = get_config("motion_controller.kinematics.min_viable_speed")
 
@@ -89,6 +93,15 @@ class MotionController(AsyncROSClient):
             "obstacle_distance_map": None,
             "grad_x": None,
             "grad_y": None,
+            "fma_speed_masked": None,
+            "fma_phi": None,
+        }
+        
+        self._fmm_snapshot = {
+            "T": None, 
+            "gx_T": None, 
+            "gy_T": None, 
+            "goal": None
         }
         
         # current pose, meters and radians
@@ -103,11 +116,16 @@ class MotionController(AsyncROSClient):
         # linear and angular speeds
         self.current_v = 0.0
         self.current_w = 0.0
+        
+        # previous decision
+        self._prev_v_dec = 0.0
+        self._prev_w_dec = 0.0
 
         # global path from path_planner
         self.global_path = None
 
         self._obstacle_upper_threshold = get_config("obstacle_upper_threshold")
+        self._free_lower_threshold = get_config("free_lower_threshold")
 
         self._last_map_ts = -1
         self._last_odom_ts = -1
@@ -115,6 +133,7 @@ class MotionController(AsyncROSClient):
         self._last_cmd_time = time.monotonic()
         
         self._edt_busy = False
+        self._fmm_busy = False
 
     def _world_to_pixel(self, wx: float, wy: float, resolution, of_x, of_y):
         px = math.floor(wx / resolution + of_x)
@@ -127,7 +146,7 @@ class MotionController(AsyncROSClient):
             return False
 
         clearance = self._get_obstacle_distance(x, y, resolution, of_x, of_y, width, height, obstacle_distance_map)
-        return clearance <= self.config.robot_radius
+        return clearance <= self.config.robot_radius * 0.4 # obstacles are already dilated by half radius
 
     def _simulate_trajectory(self, v: float, w: float, x, y, theta):
         states = []
@@ -217,10 +236,23 @@ class MotionController(AsyncROSClient):
         
         return max(0.0, min(1.0, side + (1.0 - side) * dot))
     
+    def _get_cost_to_go(self, x, y, T, resolution, of_x, of_y, width, height):
+        if T is None:
+            return float('inf')
+        
+        px, py = self._world_to_pixel(x, y, resolution, of_x, of_y)
+        if px < 0 or px >= width or py < 0 or py >= height:
+            return float('inf')
+
+        v = T[py, px]
+        if not np.isfinite(v):
+            return float('inf')
+
+        return float(v)
+    
     def _evaluate_trajectory(
         self, 
         states: list[tuple[float, float, float]], 
-        target, 
         v: float,
         w: float,
         obstacle_distance_map, 
@@ -234,6 +266,8 @@ class MotionController(AsyncROSClient):
         path,
         target_seg_i,
         grad_x, grad_y,
+        prev_v, prev_w,
+        T, gx_T, gy_T,
     ):
         if len(states) <= 0 or obstacle_distance_map is None:
             return float("inf")
@@ -241,34 +275,64 @@ class MotionController(AsyncROSClient):
         for x, y, _ in states:
             if self._is_collision(x, y, obstacle_distance_map, resolution, of_x, of_y, width, height):
                 return float("inf")
-
-        target_x, target_y = target
         
         if v >= 0:
             movement_heading = states[-1][2]
         else:
             movement_heading = states[-1][2] + math.pi
+        
+        # decision deviation
+        dev_v = abs(v - prev_v)
+        dev_w = abs(w - prev_w)
+        deviation_cost = (dev_v + dev_w) * self.config.weight_decision_deviation
 
         # heading
         ax, ay = path[target_seg_i]
         bx, by = path[target_seg_i + 1]
         path_heading = math.atan2(by - ay, bx - ax)
         
-        heading_error = abs(self._normalize_angle(path_heading - movement_heading))
+        T_heading = None
+        px, py = self._world_to_pixel(states[-1][0], states[-1][1], resolution, of_x, of_y)
+        if (gx_T is not None) and (gy_T is not None) and 0 <= px < width and 0 <= py < height:
+            gx = gx_T[py, px]
+            gy = gy_T[py, px]
+            
+            if np.isfinite(gx) and np.isfinite(gy) and (gx * gx + gy * gy) > 1e-8:
+                T_heading = math.atan2(-gy, -gx)
+        
+        if T_heading is not None:
+            geo_err = abs(self._normalize_angle(T_heading - movement_heading))
+        
+        else:
+            geo_err = abs(self._normalize_angle(path_heading - movement_heading))
 
+        heading_error = 0.5 * geo_err + 0.5 * abs(self._normalize_angle(path_heading - movement_heading))
         heading_cost = self.config.weight_heading * heading_error
 
         # progress
-        start_dist = math.hypot(robot_x - target_x, robot_y - target_y)
-        end_dist = math.hypot(states[-1][0] - target_x, states[-1][1] - target_y)
-        progress_cost = -self.config.weight_progress * (start_dist - end_dist)
+        T_start = self._get_cost_to_go(robot_x, robot_y, T, resolution, of_x, of_y, width, height)
+        T_end = self._get_cost_to_go(states[-1][0], states[-1][1], T, resolution, of_x, of_y, width, height)
+        
+        if not np.isfinite(T_end):
+            return float('inf') # destination is not reachable
+        
+        if not np.isfinite(T_start):
+            T_start = float(T_end) + 100.0
+        
+        progress = T_start - T_end
+        progress_cost = -self.config.weight_progress * progress
         
         # distance
+        ## iteration 1: min distance of every position
         # dists_to_target = [math.hypot(state[0] - target_x, state[1] - target_y) for state in states]
         # min_dist_to_target = min(dists_to_target)
         
-        dist_to_target = math.hypot(states[-1][0] - target_x, states[-1][1] - target_y)
-        dist_cost = self.config.weight_dist * (dist_to_target / (self.config.lookahead_distance + 1.0))
+        ## iteration 2: final distance
+        # dist_to_target = math.hypot(states[-1][0] - target_x, states[-1][1] - target_y)
+        # dist_cost = self.config.weight_dist * (dist_to_target / (self.config.lookahead_distance + 1.0))
+
+        ## iteration 3: FMM-based distance
+        dist_cost = self.config.weight_dist * (T_end / max(T_start, 0.1))
 
         # speed
         # speed_cost = -self.config.weight_speed * (v if v >= 0 else -v * 0.9)
@@ -276,17 +340,15 @@ class MotionController(AsyncROSClient):
         #     tt = abs(v) / 0.1
         #     speed_cost += (1.0 - tt) * (1.0 - tt) * 0.1
 
-        if start_dist < 0.3:
-            speed_cost = 0.0
-        else:
-            speed_cost = self.config.weight_speed * (self.config.max_linear_speed - abs(v))
+        # if start_dist < 0.3:
+        #     speed_cost = 0.0
+        # else:
+        #     speed_cost = self.config.weight_speed * (self.config.max_linear_speed - abs(v))
 
+        speed_cost = 0.0
         min_viable_speed = self.config.min_viable_speed
         if 1e-3 < abs(v) < min_viable_speed:
             speed_cost += 3.0 * (1.0 - abs(v) / min_viable_speed)
-
-        # # angular speed
-        # w_speed_cost = self.config.weight_speed * (self.config.max_angular_speed - abs(w))
 
         # stationary
         stationary_penalty = 0.0
@@ -331,7 +393,7 @@ class MotionController(AsyncROSClient):
 
         return heading_cost + dist_cost + speed_cost \
             + obstacle_cost + progress_cost + path_cost \
-            + stationary_penalty
+            + deviation_cost + stationary_penalty
 
     def _normalize_angle(self, angle: float):
         return (angle + math.pi) % (2 * math.pi) - math.pi
@@ -388,6 +450,7 @@ class MotionController(AsyncROSClient):
 
     def compute_control(self):
         snap = self._map_snapshot
+        fmm_snap = self._fmm_snapshot
         
         grid = snap["grid"]
         obstacle_distance_map = snap["obstacle_distance_map"]
@@ -398,6 +461,10 @@ class MotionController(AsyncROSClient):
         of_y = snap["offset_y"]
         grad_x = snap["grad_x"]
         grad_y = snap["grad_y"]
+        
+        T = fmm_snap["T"]
+        gx_T = fmm_snap["gx_T"]
+        gy_T = fmm_snap["gy_T"]
         
         path = self.global_path
         
@@ -450,11 +517,19 @@ class MotionController(AsyncROSClient):
         best_pen_v = 0.0
         best_pen_w = 0.0
 
-        target_x, target_y, target_seg_i = self._target_from_proj(path, x, y)
+        _, _, target_seg_i = self._target_from_proj(path, x, y)
         for v_cand in v_samples:
             for w_cand in w_samples:
                 states = self._simulate_trajectory(v_cand, w_cand, x, y, theta)
-                cost = self._evaluate_trajectory(states, (target_x, target_y), v_cand, w_cand, obstacle_distance_map, resolution, of_x, of_y, width, height, x, y, path, target_seg_i, grad_x, grad_y)
+                cost = self._evaluate_trajectory(
+                    states, 
+                    v_cand, w_cand, 
+                    obstacle_distance_map, resolution, of_x, of_y, width, height, 
+                    x, y, path, target_seg_i, 
+                    grad_x, grad_y,
+                    self._prev_v_dec, self._prev_w_dec,
+                    T, gx_T, gy_T
+                )
 
                 if cost < best_cost:
                     best_cost = cost
@@ -482,20 +557,39 @@ class MotionController(AsyncROSClient):
         if best_cost == float("inf"):
             return best_pen_v, best_pen_w
 
+        self._prev_v_dec, self._prev_w_dec = best_v, best_w
+
         return best_v, best_w
 
-    @aparsedata(SLAMOffsetMap)
-    async def on_slam_map(self, map):  # SLAMOffsetMap
+    def _prepare_map(self, map):
         if self._edt_busy:
-            return
+            return False
         
         self._edt_busy = True
-        
+        return_result = False
         try:
-            obstacles = map.grid < self._obstacle_upper_threshold
-            euc = (await asyncio.to_thread(distance_transform_edt, ~obstacles)).astype(np.float32)
+            if self._map_snapshot["grid"] is None or self._map_snapshot["grid"].shape != map.grid.shape:
+                return_result = True
+            
+            grid = map.grid
+            robot_r = int(math.ceil((self.config.robot_radius / 2) / map.resolution))
+            kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, (2 * robot_r + 1, 2 * robot_r + 1))
+
+            # dilation
+            obstacle_mask = (grid < self._obstacle_upper_threshold).astype(np.uint8) * 255
+            dilated_mask = cv.dilate(obstacle_mask, kernel, iterations=1)
+            grid[dilated_mask == 255] = 0
+            
+            obstacles = grid < self._obstacle_upper_threshold
+            euc = distance_transform_edt(~obstacles).astype(np.float32)
             euc *= map.resolution
             
+            # fmm preparations
+            speed = np.ones(grid.shape, dtype=float)
+            speed[euc < self.config.robot_radius * 1.5] = 0.5
+            speed_masked = np.ma.MaskedArray(speed, mask=obstacles)
+            
+            # obstacle gradient
             gau = gaussian_filter(euc, sigma=1.0)
             gy, gx = np.gradient(gau, map.resolution)
 
@@ -510,11 +604,60 @@ class MotionController(AsyncROSClient):
                 "obstacle_distance_map": euc,
                 "grad_x": gx,
                 "grad_y": gy,
+                "fma_speed_masked": speed_masked,
+                "fma_mask": obstacles,
             }
             self._last_map_ts = time.monotonic()
-        
+
         finally:
             self._edt_busy = False
+    
+        return return_result
+
+    def _rebuild_fmm(self):
+        snap = self._map_snapshot
+        if snap["grid"] is None or self.global_path is None or len(self.global_path) < 2:
+            return
+        
+        if self._fmm_busy:
+            return
+        
+        self._fmm_busy = True
+
+        try:
+            goal_x, goal_y = self.global_path[-1]
+            px, py = self._world_to_pixel(goal_x, goal_y, snap["resolution"], snap["offset_x"], snap["offset_y"])
+            
+            if not (0 <= px < snap["width"] and 0 <= py < snap["height"]):
+                return
+            
+            speed_masked = snap["fma_speed_masked"]
+            mask = snap["fma_mask"]
+            
+            phi = np.ones(snap["grid"].shape, dtype=float)
+            phi[py, px] = -1.0
+            phi_masked = np.ma.MaskedArray(phi, mask=mask)
+            
+            T_masked = skfmm.travel_time(phi_masked, speed_masked)
+            T = T_masked.filled(np.inf).astype(np.float32)
+            
+            gy_T, gx_T = np.gradient(T, snap["resolution"])
+            
+            self._fmm_snapshot = {
+                "T": T,
+                "gx_T": gx_T,
+                "gy_T": gy_T,
+            }
+        
+        finally:
+            self._fmm_busy = False
+
+    @aparsedata(SLAMOffsetMap)
+    async def on_slam_map(self, map):  # SLAMOffsetMap        
+        shape_changed = await asyncio.to_thread(self._prepare_map, map)
+        
+        if shape_changed:
+            await asyncio.to_thread(self._rebuild_fmm)
 
     @aparsedata(TimedMovement3DoF)
     async def on_slam_pose(self, pose):
@@ -551,7 +694,11 @@ class MotionController(AsyncROSClient):
 
     @aparsedata(NumpyArray)
     async def on_pathplanner_globalpath(self, path: np.ndarray):
+        rebuild_fmm = self.global_path is None or np.linalg.norm(self.global_path[-1] - path[-1]) > 0.2  
         self.global_path = path
+
+        if rebuild_fmm:
+            await asyncio.to_thread(self._rebuild_fmm)
 
 
 async def main():
