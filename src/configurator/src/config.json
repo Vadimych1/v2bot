@@ -127,24 +127,30 @@
         },
         "time": {
             "delta": 0.1,
-            "prediction": 2.5
+            "prediction": 2.0
         },
         "sampling": {
-            "omega_samples": 9,
-            "v_samples": 9
+            "omega_samples": 17,
+            "v_samples": 13
         },
         "weights": {
-            "heading": 1.2,
-            "distance": 0.36,
-            "speed": 0.1,
-            "obstacle": 0.42,
-            "progress": 1.05,
-            "path": 0.77,
-            "obstacle_side_factor": 0.32,
-            "decision_deviation": 0.8
+            "heading": 1.6,
+            "distance": 0.16,
+            "speed": 0.07,
+            "obstacle": 0.4,
+            "progress": 1.1,
+            "path": 0.8,
+            "decision_deviation": 2.0,
+            "commitment": 1.0,
+            "commitment_w_threshold": 0.15,
+            "obstacle_side_factor": 0.55
         },
         "miniros": {
             "cmdvel_post_delay": 0.08
+        },
+        "smoothing": {
+            "alpha_w": 0.5,
+            "alpha_v": 0.6
         },
         "goal_tolerance": 0.15,
         "lookahead_distance": 0.6,

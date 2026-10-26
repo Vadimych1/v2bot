@@ -46,6 +46,9 @@ class MotionControllerConfig:
         self.weight_progress = get_config("motion_controller.weights.progress")
         self.weight_path = get_config("motion_controller.weights.path")
         self.weight_decision_deviation = get_config("motion_controller.weights.decision_deviation")
+        self.weight_commitment = get_config("motion_controller.weights.commitment")
+        
+        self.commitment_w_threshold = get_config("motion_controller.weights.commitment_w_threshold")
         
         self.obstacle_side_factor = get_config("motion_controller.weights.obstacle_side_factor")
         self.min_viable_speed = get_config("motion_controller.kinematics.min_viable_speed")
@@ -55,6 +58,8 @@ class MotionControllerConfig:
         
         self.inf_mul = get_config("motion_controller.influence_distance_multiplier")
 
+        self.alpha_v = get_config("motion_controller.smoothing.alpha_v")
+        self.alpha_w = get_config("motion_controller.smoothing.alpha_w")
 
 class MotionController(AsyncROSClient):
     """
@@ -117,9 +122,9 @@ class MotionController(AsyncROSClient):
         self.current_v = 0.0
         self.current_w = 0.0
         
-        # previous decision
-        self._prev_v_dec = 0.0
-        self._prev_w_dec = 0.0
+        # smoothed control
+        self._smoothed_w = 0.0
+        self._smoothed_v = 0.0
 
         # global path from path_planner
         self.global_path = None
@@ -282,9 +287,9 @@ class MotionController(AsyncROSClient):
             movement_heading = states[-1][2] + math.pi
         
         # decision deviation
-        dev_v = abs(v - prev_v)
-        dev_w = abs(w - prev_w)
-        deviation_cost = (dev_v + dev_w) * self.config.weight_decision_deviation
+        dev_v = (v - prev_v) / max(self.config.max_linear_speed, 1e-3)
+        dev_w = (w - prev_w) / max(self.config.max_angular_speed, 1e-3)
+        deviation_cost = (dev_v * dev_v + dev_w * dev_w) * self.config.weight_decision_deviation
 
         # heading
         ax, ay = path[target_seg_i]
@@ -308,6 +313,17 @@ class MotionController(AsyncROSClient):
 
         heading_error = 0.5 * geo_err + 0.5 * abs(self._normalize_angle(path_heading - movement_heading))
         heading_cost = self.config.weight_heading * heading_error
+
+        # commitment
+        commitment_cost = 0.0
+        if abs(prev_w) > self.config.commitment_w_threshold:
+            same_dir = (w * prev_w) > 0.0
+            magnitude = min(abs(prev_w), abs(w))
+            
+            if same_dir:
+                commitment_cost = -self.config.weight_commitment * magnitude
+            else:
+                commitment_cost = -self.config.weight_commitment * magnitude
 
         # progress
         T_start = self._get_cost_to_go(robot_x, robot_y, T, resolution, of_x, of_y, width, height)
@@ -345,7 +361,7 @@ class MotionController(AsyncROSClient):
         # else:
         #     speed_cost = self.config.weight_speed * (self.config.max_linear_speed - abs(v))
 
-        speed_cost = 0.0
+        speed_cost = self.config.weight_speed * max(0.0, self.config.max_linear_speed - abs(v))
         min_viable_speed = self.config.min_viable_speed
         if 1e-3 < abs(v) < min_viable_speed:
             speed_cost += 3.0 * (1.0 - abs(v) / min_viable_speed)
@@ -391,9 +407,9 @@ class MotionController(AsyncROSClient):
         deviations = [self._path_deviation(sx, sy, path, seg_i) for sx, sy, _ in states]
         path_cost = self.config.weight_path * (sum(deviations) / len(deviations))
 
-        return heading_cost + dist_cost + speed_cost \
-            + obstacle_cost + progress_cost + path_cost \
-            + deviation_cost + stationary_penalty
+        return heading_cost   + dist_cost       + speed_cost \
+             + obstacle_cost  + progress_cost   + path_cost \
+             + deviation_cost + commitment_cost + stationary_penalty
 
     def _normalize_angle(self, angle: float):
         return (angle + math.pi) % (2 * math.pi) - math.pi
@@ -527,7 +543,8 @@ class MotionController(AsyncROSClient):
                     obstacle_distance_map, resolution, of_x, of_y, width, height, 
                     x, y, path, target_seg_i, 
                     grad_x, grad_y,
-                    self._prev_v_dec, self._prev_w_dec,
+                    # smoothed variables are always equal to previously-used
+                    self._smoothed_v, self._smoothed_v,
                     T, gx_T, gy_T
                 )
 
@@ -555,11 +572,14 @@ class MotionController(AsyncROSClient):
 
         # instead of just standing still find the least-penetration trajectory
         if best_cost == float("inf"):
-            return best_pen_v, best_pen_w
+            self._smoothed_w = self.config.alpha_w * best_pen_w + (1 - self.config.alpha_w) * self._smoothed_w
+            self._smoothed_v = self.config.alpha_v * best_pen_v + (1 - self.config.alpha_v) * self._smoothed_v
 
-        self._prev_v_dec, self._prev_w_dec = best_v, best_w
+        else:
+            self._smoothed_w = self.config.alpha_w * best_w + (1 - self.config.alpha_w) * self._smoothed_w
+            self._smoothed_v = self.config.alpha_v * best_v + (1 - self.config.alpha_v) * self._smoothed_v
 
-        return best_v, best_w
+        return self._smoothed_v, self._smoothed_w
 
     def _prepare_map(self, map):
         if self._edt_busy:
