@@ -95,7 +95,8 @@
             "search_radius_factor": 1.5,
             "rrt_star_gamma": 50.0,
             "rrt_star_radius_floor": 1.5,
-            "rrt_star_radius_cap": 8.0
+            "rrt_star_radius_cap": 8.0,
+            "path_smooth_iter": 3
         },
         "miniros": {
             "rebuild_check_time": 0.1,
@@ -142,6 +143,7 @@
             "path": 0.8,
             "decision_deviation": 2.0,
             "commitment": 1.0,
+            "reverse": 1.0,
             "commitment_w_threshold": 0.15,
             "obstacle_side_factor": 0.55
         },
@@ -154,6 +156,7 @@
         },
         "goal_tolerance": 0.15,
         "lookahead_distance": 0.6,
+        "fmm_map_change_threshold": 100,
         "influence_distance_multiplier": 2.0,
         "odometry_max_age": 0.6,
         "map_max_age": 2

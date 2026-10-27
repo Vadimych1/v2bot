@@ -47,6 +47,7 @@ class MotionControllerConfig:
         self.weight_path = get_config("motion_controller.weights.path")
         self.weight_decision_deviation = get_config("motion_controller.weights.decision_deviation")
         self.weight_commitment = get_config("motion_controller.weights.commitment")
+        self.weight_reverse = get_config("motion_controller.weights.reverse")
         
         self.commitment_w_threshold = get_config("motion_controller.weights.commitment_w_threshold")
         
@@ -55,11 +56,12 @@ class MotionControllerConfig:
 
         self.goal_tolerance = get_config("motion_controller.goal_tolerance")
         self.lookahead_distance = get_config("motion_controller.lookahead_distance")
-        
         self.inf_mul = get_config("motion_controller.influence_distance_multiplier")
 
         self.alpha_v = get_config("motion_controller.smoothing.alpha_v")
         self.alpha_w = get_config("motion_controller.smoothing.alpha_w")
+
+        self.fmm_map_change_threshold = get_config("motion_controller.fmm_map_change_threshold")
 
 class MotionController(AsyncROSClient):
     """
@@ -151,13 +153,14 @@ class MotionController(AsyncROSClient):
             return False
 
         clearance = self._get_obstacle_distance(x, y, resolution, of_x, of_y, width, height, obstacle_distance_map)
-        return clearance <= self.config.robot_radius * 0.4 # obstacles are already dilated by half radius
+        return clearance <= self.config.robot_radius
 
-    def _simulate_trajectory(self, v: float, w: float, x, y, theta):
+    def _simulate_trajectory(self, v: float, w: float, x, y, theta, clearance_now):
         states = []
         dt = self.config.dt
 
-        pred_time = self.config.predict_time
+        scale = min(1.0, clearance_now / (2.0 * self.config.robot_radius))
+        pred_time = self.config.predict_time * max(0.4, scale)
         
         steps = max(1, round(pred_time / dt))
         for _ in range(steps):
@@ -323,7 +326,7 @@ class MotionController(AsyncROSClient):
             if same_dir:
                 commitment_cost = -self.config.weight_commitment * magnitude
             else:
-                commitment_cost = -self.config.weight_commitment * magnitude
+                commitment_cost = +self.config.weight_commitment * magnitude
 
         # progress
         T_start = self._get_cost_to_go(robot_x, robot_y, T, resolution, of_x, of_y, width, height)
@@ -366,6 +369,9 @@ class MotionController(AsyncROSClient):
         if 1e-3 < abs(v) < min_viable_speed:
             speed_cost += 3.0 * (1.0 - abs(v) / min_viable_speed)
 
+        # reverse
+        reverse_cost = self.config.weight_reverse * abs(v) if v < 0.0 else 0.0
+
         # stationary
         stationary_penalty = 0.0
         w_dead = 0.10
@@ -397,7 +403,10 @@ class MotionController(AsyncROSClient):
             )
 
             normalized = (influence_distance - clearance) / influence_distance
-            temporal_weight = (i + 1) / n
+            
+            # temporal_weight = (i + 1) / n
+            temporal_weight = math.sqrt(1 / n)
+            
             obstacle_cost += normalized * normalized * dir_factor * temporal_weight
 
         obstacle_cost *= self.config.weight_obstacle
@@ -409,7 +418,8 @@ class MotionController(AsyncROSClient):
 
         return heading_cost   + dist_cost       + speed_cost \
              + obstacle_cost  + progress_cost   + path_cost \
-             + deviation_cost + commitment_cost + stationary_penalty
+             + deviation_cost + commitment_cost + reverse_cost \
+             + stationary_penalty
 
     def _normalize_angle(self, angle: float):
         return (angle + math.pi) % (2 * math.pi) - math.pi
@@ -463,6 +473,115 @@ class MotionController(AsyncROSClient):
             remaining -= sl
         
         return path[-1][0], path[-1][1], len(path) - 2
+
+    def _prepare_map(self, map):
+        if self._edt_busy:
+            return False
+        
+        self._edt_busy = True
+        return_result = False
+        try:
+            if self._map_snapshot["grid"] is None or self._map_snapshot["grid"].shape != map.grid.shape:
+                return_result = True
+            
+            elif np.count_nonzero(self._map_snapshot["grid"] - map.grid) > self.config.fmm_map_change_threshold:
+            
+            grid = map.grid
+            # robot_r = int(math.ceil((self.config.robot_radius / 2) / map.resolution))
+            # kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, (2 * robot_r + 1, 2 * robot_r + 1))
+
+            # dilation
+            # obstacle_mask = (grid < self._obstacle_upper_threshold).astype(np.uint8) * 255
+            # dilated_mask = cv.dilate(obstacle_mask, kernel, iterations=1)
+            # grid[dilated_mask == 255] = 0
+            
+            obstacles = grid < self._obstacle_upper_threshold
+            euc = distance_transform_edt(~obstacles).astype(np.float32)
+            euc *= map.resolution
+            
+            # fmm preparations
+            speed = np.ones(grid.shape, dtype=float)
+            # speed[euc < self.config.robot_radius * 0.1] = 0.5 # reduce speed near walls
+            speed_masked = np.ma.MaskedArray(speed, mask=obstacles)
+            
+            # obstacle gradient
+            gau = gaussian_filter(euc, sigma=1.0)
+            gy, gx = np.gradient(gau, map.resolution)
+
+            # single atomic swap
+            self._map_snapshot = {
+                "grid": map.grid,
+                "width": map.width,
+                "height": map.height,
+                "offset_x": map.offset_x,
+                "offset_y": map.offset_y,
+                "resolution": map.resolution,
+                "obstacle_distance_map": euc,
+                "grad_x": gx,
+                "grad_y": gy,
+                "fma_speed_masked": speed_masked,
+                "fma_mask": obstacles,
+            }
+            self._last_map_ts = time.monotonic()
+
+        finally:
+            self._edt_busy = False
+    
+        return return_result
+
+    def _rebuild_fmm(self):
+        snap = self._map_snapshot
+        if snap["grid"] is None or self.global_path is None or len(self.global_path) < 2:
+            return
+        
+        if self._fmm_busy:
+            return
+        
+        self._fmm_busy = True
+
+        try:
+            goal_x, goal_y = self.global_path[-1]
+            px, py = self._world_to_pixel(goal_x, goal_y, snap["resolution"], snap["offset_x"], snap["offset_y"])
+            
+            if not (0 <= px < snap["width"] and 0 <= py < snap["height"]):
+                return
+            
+            speed_masked = snap["fma_speed_masked"]
+            mask = snap["fma_mask"]
+            
+            phi = np.ones(snap["grid"].shape, dtype=float)
+            
+            if mask[py, px]:
+                r = 10
+                y0, y1 = max(0, py - r), min(mask.shape[0], py + r + 1)
+                x0, x1 = max(0, px - r), min(mask.shape[0], px + r + 1)
+                
+                free = np.argwhere(~mask[y0:y1, x0:x1])
+                
+                if len(free) == 0:
+                    return
+                
+                d = ((free - [py - y0, px - x0]) ** 2).sum(axis=1)
+                dy, dx = free[np.argmin(d)]
+                py, px = y0 + dy, x0 + dx
+            
+            phi[py, px] = -1.0
+            phi_masked = np.ma.MaskedArray(phi, mask=mask)
+            
+            T_masked = skfmm.travel_time(phi_masked, speed_masked)
+            T = T_masked.filled(np.inf).astype(np.float32)
+            
+            with np.errstate(invalid="ignore"):
+                gy_T, gx_T = np.gradient(T, snap["resolution"])
+            
+            self._fmm_snapshot = {
+                "T": T,
+                "gx_T": gx_T,
+                "gy_T": gy_T,
+            }
+        
+        finally:
+            self._fmm_busy = False
 
     def compute_control(self):
         snap = self._map_snapshot
@@ -533,18 +652,19 @@ class MotionController(AsyncROSClient):
         best_pen_v = 0.0
         best_pen_w = 0.0
 
+        clearance_now = self._get_obstacle_distance(x, y, resolution, of_x, of_y, width, height, obstacle_distance_map)
         _, _, target_seg_i = self._target_from_proj(path, x, y)
         for v_cand in v_samples:
             for w_cand in w_samples:
-                states = self._simulate_trajectory(v_cand, w_cand, x, y, theta)
+                states = self._simulate_trajectory(v_cand, w_cand, x, y, theta, clearance_now)
                 cost = self._evaluate_trajectory(
                     states, 
-                    v_cand, w_cand, 
-                    obstacle_distance_map, resolution, of_x, of_y, width, height, 
-                    x, y, path, target_seg_i, 
+                    v_cand, w_cand,
+                    obstacle_distance_map, resolution, of_x, of_y, width, height,
+                    x, y, path, target_seg_i,
                     grad_x, grad_y,
                     # smoothed variables are always equal to previously-used
-                    self._smoothed_v, self._smoothed_v,
+                    self._smoothed_v, self._smoothed_w,
                     T, gx_T, gy_T
                 )
 
@@ -552,7 +672,7 @@ class MotionController(AsyncROSClient):
                     best_cost = cost
                     best_v = v_cand
                     best_w = w_cand
-                
+
                 # if on current step all the costs were inf
                 if best_cost == float("inf"):
                     pen = 0.0
@@ -581,102 +701,10 @@ class MotionController(AsyncROSClient):
 
         return self._smoothed_v, self._smoothed_w
 
-    def _prepare_map(self, map):
-        if self._edt_busy:
-            return False
-        
-        self._edt_busy = True
-        return_result = False
-        try:
-            if self._map_snapshot["grid"] is None or self._map_snapshot["grid"].shape != map.grid.shape:
-                return_result = True
-            
-            grid = map.grid
-            robot_r = int(math.ceil((self.config.robot_radius / 2) / map.resolution))
-            kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, (2 * robot_r + 1, 2 * robot_r + 1))
-
-            # dilation
-            obstacle_mask = (grid < self._obstacle_upper_threshold).astype(np.uint8) * 255
-            dilated_mask = cv.dilate(obstacle_mask, kernel, iterations=1)
-            grid[dilated_mask == 255] = 0
-            
-            obstacles = grid < self._obstacle_upper_threshold
-            euc = distance_transform_edt(~obstacles).astype(np.float32)
-            euc *= map.resolution
-            
-            # fmm preparations
-            speed = np.ones(grid.shape, dtype=float)
-            speed[euc < self.config.robot_radius * 1.5] = 0.5
-            speed_masked = np.ma.MaskedArray(speed, mask=obstacles)
-            
-            # obstacle gradient
-            gau = gaussian_filter(euc, sigma=1.0)
-            gy, gx = np.gradient(gau, map.resolution)
-
-            # single atomic swap
-            self._map_snapshot = {
-                "grid": map.grid,
-                "width": map.width,
-                "height": map.height,
-                "offset_x": map.offset_x,
-                "offset_y": map.offset_y,
-                "resolution": map.resolution,
-                "obstacle_distance_map": euc,
-                "grad_x": gx,
-                "grad_y": gy,
-                "fma_speed_masked": speed_masked,
-                "fma_mask": obstacles,
-            }
-            self._last_map_ts = time.monotonic()
-
-        finally:
-            self._edt_busy = False
-    
-        return return_result
-
-    def _rebuild_fmm(self):
-        snap = self._map_snapshot
-        if snap["grid"] is None or self.global_path is None or len(self.global_path) < 2:
-            return
-        
-        if self._fmm_busy:
-            return
-        
-        self._fmm_busy = True
-
-        try:
-            goal_x, goal_y = self.global_path[-1]
-            px, py = self._world_to_pixel(goal_x, goal_y, snap["resolution"], snap["offset_x"], snap["offset_y"])
-            
-            if not (0 <= px < snap["width"] and 0 <= py < snap["height"]):
-                return
-            
-            speed_masked = snap["fma_speed_masked"]
-            mask = snap["fma_mask"]
-            
-            phi = np.ones(snap["grid"].shape, dtype=float)
-            phi[py, px] = -1.0
-            phi_masked = np.ma.MaskedArray(phi, mask=mask)
-            
-            T_masked = skfmm.travel_time(phi_masked, speed_masked)
-            T = T_masked.filled(np.inf).astype(np.float32)
-            
-            gy_T, gx_T = np.gradient(T, snap["resolution"])
-            
-            self._fmm_snapshot = {
-                "T": T,
-                "gx_T": gx_T,
-                "gy_T": gy_T,
-            }
-        
-        finally:
-            self._fmm_busy = False
-
     @aparsedata(SLAMOffsetMap)
     async def on_slam_map(self, map):  # SLAMOffsetMap        
-        shape_changed = await asyncio.to_thread(self._prepare_map, map)
-        
-        if shape_changed:
+        map_changed = await asyncio.to_thread(self._prepare_map, map)
+        if map_changed:
             await asyncio.to_thread(self._rebuild_fmm)
 
     @aparsedata(TimedMovement3DoF)
