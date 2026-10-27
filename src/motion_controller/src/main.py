@@ -1,6 +1,5 @@
 from scipy.ndimage import distance_transform_edt, gaussian_filter
 import numpy as np
-import cv2 as cv
 import skfmm
 import math
 import time
@@ -284,10 +283,12 @@ class MotionController(AsyncROSClient):
             if self._is_collision(x, y, obstacle_distance_map, resolution, of_x, of_y, width, height):
                 return float("inf")
         
-        if v >= 0:
-            movement_heading = states[-1][2]
-        else:
-            movement_heading = states[-1][2] + math.pi
+        # if v >= 0:
+        #     movement_heading = states[-1][2]
+        # else:
+        #     movement_heading = states[-1][2] + math.pi
+        movement_heading = states[-1][2]
+
         
         # decision deviation
         dev_v = (v - prev_v) / max(self.config.max_linear_speed, 1e-3)
@@ -656,11 +657,7 @@ class MotionController(AsyncROSClient):
         clearance_now = self._get_obstacle_distance(x, y, resolution, of_x, of_y, width, height, obstacle_distance_map)
         _, _, target_seg_i = self._target_from_proj(path, x, y)
         for v_cand in v_samples:
-            for w_cand in w_samples:
-                # turn-or-move mode
-                if not np.isclose(w_cand, 0) and not np.isclose(v_cand, 0):
-                    continue
-                
+            for w_cand in w_samples:                
                 states = self._simulate_trajectory(v_cand, w_cand, x, y, theta, clearance_now)
                 cost = self._evaluate_trajectory(
                     states, 

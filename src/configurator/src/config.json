@@ -111,7 +111,7 @@
             "baudrate": 115200
         },
         "robot": {
-            "track_distance": 0.15264641017836997,
+            "track_distance": 0.1577,
             "wheel_radius": 0.0189
         }
     },
