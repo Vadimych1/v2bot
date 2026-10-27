@@ -485,6 +485,7 @@ class MotionController(AsyncROSClient):
                 return_result = True
             
             elif np.count_nonzero(self._map_snapshot["grid"] - map.grid) > self.config.fmm_map_change_threshold:
+                return_result = True
             
             grid = map.grid
             # robot_r = int(math.ceil((self.config.robot_radius / 2) / map.resolution))
@@ -703,6 +704,9 @@ class MotionController(AsyncROSClient):
 
     @aparsedata(SLAMOffsetMap)
     async def on_slam_map(self, map):  # SLAMOffsetMap        
+        asyncio.create_task(self._handle_map(map))
+
+    async def _handle_map(self, map):
         map_changed = await asyncio.to_thread(self._prepare_map, map)
         if map_changed:
             await asyncio.to_thread(self._rebuild_fmm)

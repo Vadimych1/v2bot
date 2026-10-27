@@ -92,6 +92,7 @@
             "max_iter": 10000,
             "step_size_px": 6.0,
             "goal_tolerance_px": 7.0,
+            "goal_bias_chance": 0.1,
             "search_radius_factor": 1.5,
             "rrt_star_gamma": 50.0,
             "rrt_star_radius_floor": 1.5,
@@ -114,7 +115,7 @@
             "wheel_radius": 0.0189
         },
         "miniros": {
-            "odometry_post_delay": 0.1
+            "odometry_post_delay": 0.08
         }
     },
     "motion_controller": {
@@ -146,9 +147,6 @@
             "reverse": 1.0,
             "commitment_w_threshold": 0.15,
             "obstacle_side_factor": 0.55
-        },
-        "miniros": {
-            "cmdvel_post_delay": 0.08
         },
         "smoothing": {
             "alpha_w": 0.5,

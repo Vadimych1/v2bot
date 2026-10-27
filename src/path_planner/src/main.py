@@ -264,8 +264,8 @@ class PathPlanner(AsyncROSClient):
         stack = [root_idx]
         while stack:
             i = stack.pop()
-            tree[i]["cost"] += delta
-            stack.extend(tree[i]["children"])
+            tree[i].cost += delta
+            stack.extend(tree[i].children)
 
     def _greedy_shortcut(
         self, pixel_path: list[tuple[int, int]], max_lookahead: int = 6
@@ -374,7 +374,7 @@ class PathPlanner(AsyncROSClient):
             if random.random() < goal_bias:
                 jitter = step_size * 2
                 rand_x = end_pos[0] + random.uniform(-jitter, jitter)
-                rand_x = end_pos[1] + random.uniform(-jitter, jitter)
+                rand_y = end_pos[1] + random.uniform(-jitter, jitter)
             
             else:
                 rand_x = random.uniform(self.min_x, self.max_x)
@@ -506,12 +506,8 @@ async def main():
     rebuild_check_time = get_config("path_planner.miniros.rebuild_check_time")
     max_no_rebuild_time = get_config("path_planner.miniros.max_no_rebuild_time")
 
-    min_distance_from_start_to_goal = get_config(
-        "path_planner.pathfinder.min_distance_to_rebuild"
-    )
-    min_distance_between_goals = get_config(
-        "path_planner.pathfinder.min_distance_between_goals"
-    )
+    min_distance_from_start_to_goal = get_config("path_planner.pathfinder.min_distance_to_rebuild")
+    min_distance_between_goals = get_config("path_planner.pathfinder.min_distance_between_goals")
 
     max_iter = get_config("path_planner.pathfinder.max_iter")
     step_size = get_config("path_planner.pathfinder.step_size_px")

@@ -9,7 +9,7 @@ class ArduinoSerial:
         self.serial = wireio.AsyncSerial(port, baudrate, timeout=1)
         
         self.last_odometry = None
-        self.odometry_version = 0
+        self.odometry_event = Event()
         
         self.running = Event()
         self._lock = Lock()
@@ -43,7 +43,7 @@ class ArduinoSerial:
             
             l = list(map(float, parts))
             self.last_odometry = l
-            self.odometry_version += 1
+            self.odometry_event.set()
 
         except UnicodeDecodeError:
             pass
@@ -70,4 +70,5 @@ class ArduinoSerial:
 
     async def close(self):
         """Close serial connection"""
+        self.running.clear()
         await self.serial.close()
