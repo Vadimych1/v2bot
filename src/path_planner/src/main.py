@@ -80,7 +80,7 @@ class _RRTIndex:
         
         return result
 
-@dataclass
+@dataclass(slots=True)
 class _RRTNode:
     pos: tuple[float, float]
     parent: int
@@ -409,23 +409,22 @@ class PathPlanner(AsyncROSClient):
 
             # fallback: nearest not in near_indices (small radius, big step)
             if nearest_idx not in near_indices:
-                if self._line_of_sight(nearest_pos, new_pos):
-                    cost_candidate = nearest_node.cost + self._distance(nearest_pos, new_pos)
-                    if cost_candidate < min_cost:
-                        min_cost = cost_candidate
-                        best_parent = nearest_idx
+                cost_candidate = nearest_node.cost + self._distance(nearest_pos, new_pos)
+                if cost_candidate < min_cost:
+                    min_cost = cost_candidate
+                    best_parent = nearest_idx
 
             if min_cost == float("inf"):
                 continue
 
-            # --- insert new node ---
+            # insert new node
             new_node = _RRTNode(pos=new_pos, parent=best_parent, cost=min_cost, children=[])
             tree.append(new_node)
             new_idx = len(tree) - 1
             tree[best_parent].children.append(new_idx)
             index.insert(new_pos)
 
-            # --- rewire (with subtree cost propagation) ---
+            # rewire with subtree cost propagation
             for idx in near_indices:
                 if idx == new_idx or idx == best_parent:
                     continue
