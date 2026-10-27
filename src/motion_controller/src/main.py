@@ -657,6 +657,10 @@ class MotionController(AsyncROSClient):
         _, _, target_seg_i = self._target_from_proj(path, x, y)
         for v_cand in v_samples:
             for w_cand in w_samples:
+                # turn-or-move mode
+                if not np.isclose(w_cand, 0) and not np.isclose(v_cand, 0):
+                    continue
+                
                 states = self._simulate_trajectory(v_cand, w_cand, x, y, theta, clearance_now)
                 cost = self._evaluate_trajectory(
                     states, 

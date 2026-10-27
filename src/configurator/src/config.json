@@ -113,9 +113,6 @@
         "robot": {
             "track_distance": 0.15264641017836997,
             "wheel_radius": 0.0189
-        },
-        "miniros": {
-            "odometry_post_delay": 0.08
         }
     },
     "motion_controller": {
@@ -147,6 +144,9 @@
             "reverse": 1.0,
             "commitment_w_threshold": 0.15,
             "obstacle_side_factor": 0.55
+        },
+        "miniros": {
+            "cmdvel_post_delay": 0.08
         },
         "smoothing": {
             "alpha_w": 0.5,
