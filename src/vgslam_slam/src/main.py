@@ -6,9 +6,8 @@ import os
 import time
 import json
 from miniros_configurator import get_config
-from miniros import AsyncROSClient, datatypes, aparsedata
-from miniros_slam.source.datatypes import SLAMOffsetMap
-from miniros.util.datatypes import Movement3DoF, TimedMovement3DoF
+from miniros import AsyncROSClient, datatypes, naming, aparsedata
+from miniros.util.datatypes import TimedPose3DoF, TimedOdometry3DoF, OccupancyGrid, Lidar2D
 
 import numpy as np
 from vgslam import VGSLAM, PositionedCloud, scan_to_cloud
@@ -89,12 +88,10 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
             if closed:
                 print("successful loop closure", flush=True)
 
-            movement_msg = TimedMovement3DoF(
-                movement=Movement3DoF(
-                    x=pose[0],
-                    y=pose[1],
-                    theta=pose[2],
-                ),
+            movement_msg = TimedPose3DoF(
+                x=pose[0],
+                y=pose[1],
+                theta=pose[2],
                 timestamp=time.time()
             )
             mmap_data = None
@@ -105,7 +102,7 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
             if map_counter % 3 == 0:
                 grid = mapper.create_occupancy_grid(occupied_threshold)
                 
-                mmap_data = SLAMOffsetMap(
+                mmap_data = OccupancyGrid(
                     grid=grid.grid,
                     width=grid.width,
                     height=grid.height,
@@ -114,10 +111,10 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
                     resolution=grid.resolution,
                 )
 
-                mmap_data = SLAMOffsetMap.encode(mmap_data)
+                mmap_data = OccupancyGrid.encode(mmap_data)
 
             map_counter += 1
-            output_queue.put((TimedMovement3DoF.encode(movement_msg), mmap_data))
+            output_queue.put((TimedPose3DoF.encode(movement_msg), mmap_data))
 
     except Exception as e:
         print(f"slam_worker exiting {e}", flush=True)
@@ -148,7 +145,7 @@ class FixedSizeList(list):
 
 class SLAMClient(AsyncROSClient):
     def __init__(self, ip="localhost", port=3000):
-        super().__init__("slam", ip, port)
+        super().__init__(naming.Node.SLAM, ip, port)
 
         self.dxy = 0
         self.dtheta = 0
@@ -171,13 +168,134 @@ class SLAMClient(AsyncROSClient):
         
         self.saves_path = get_config("vgslam.saves_path")
         os.makedirs(self.saves_path, exist_ok=True)
+        
+        # topics
+        self.add_topic_handler(self.lidar_handler,
+            naming.Node.LIDAR,
+            naming.Topic.L_SCAN,
+        )
+        self.add_topic_handler(self.odometry_handler,
+            naming.Node.MOTOR_CONTROLLER,
+            naming.Topic.O_POSE,
+        )
+        
+        # anon
+        self.add_anon_handler(
+            self.anon_load_handler,
+            "load",
+        )
+        self.add_anon_handler(
+            self.anon_save_handler,
+            "save",
+        )
+        self.add_anon_handler(
+            self.anon_saves_handler,
+            "saves",
+        )
 
+    @aparsedata(Lidar2D)    
+    async def lidar_handler(self, data):
+        """
+        Handles lidar messages
+        """
+        
+        if self.scan_queue.full():
+            try:
+                self.scan_queue.get_nowait()
+
+            except Empty:
+                pass
+
+        try:
+            mov = await self._wait_for_odometry_at(data.timestamp, max_retries=3)
+            
+            if mov is None:
+                return
+
+            self.scan_queue.put_nowait((
+                mov.x,
+                mov.y,
+                mov.theta,
+                data.distances,
+                data.angles,
+            ))
+
+        except Exception:
+            pass
+
+    @aparsedata(TimedOdometry3DoF)
+    async def odometry_handler(self, data):
+        """
+        Handler odometry messages
+        """
+        
+        self._odometry.append(data)
+        self._odometry_event.set()
+    
+    # anon message that sends anon reply message with
+    # list of saves in json format and
+    # accepts a field for reply as an argument
+    @aparsedata(datatypes.String)
+    async def anon_saves_handler(self, data: str, from_node: str):
+        """
+        Handler for 'saves' anon messages
+        
+        Retrieves existing saves and sends them back on specified anon pipe 
+        """
+        
+        saves = os.listdir(self.saves_path)
+        await self.anon(
+            from_node,
+            data,
+            datatypes.String.encode(
+                json.dumps(saves)
+            ),
+            force_to_tcp=True,
+        )
+    
+    async def anon_save_handler(self, data: None, from_node: str):
+        """
+        Handler for 'save' anon messages
+        
+        Sends 'save' signal to SLAM worker process
+        """
+        
+        fname = os.path.join(self.saves_path, f"save_{int(time.time())}.vgs")
+        self.scan_queue.put(f"save|{fname}")
+    
+    @aparsedata(datatypes.String)
+    async def anon_load_handler(self, data: str, from_node: str):
+        """
+        Handler for 'load' anon messages
+        
+        Sends 'load' signal to SLAM worker process that loads specified save file
+        """
+        
+        saves = os.listdir(self.saves_path)
+        
+        if data not in saves:
+            return
+        
+        fname = os.path.join(self.saves_path, data)
+        self.scan_queue.put(f"load|{fname}")
+    
+    ## helper functions
     def start_slam_process(self):
+        """
+        Start SLAM worker process
+        """
+        
         self.running.set()
         self.slam_proc = mp.Process(target=slam_worker, args=(self.scan_queue, self.result_queue), daemon=True)
         self.slam_proc.start()
 
     async def consume_results(self):
+        """
+        Start pulling SLAM localization results from the worker process
+        
+        Automatically restarts process if it dies
+        """
+        
         while self.running.is_set():
             if self.slam_proc is None or not self.slam_proc.is_alive():
                 print("slam_worker died - restarting", flush=True)
@@ -205,71 +323,7 @@ class SLAMClient(AsyncROSClient):
                 self.last_map = mmap_data
                 self._map_version += 1
 
-    @aparsedata(datatypes.Lidar2D)
-    async def on_lidar_lidar(self, data):
-        asyncio.create_task(self._lidar_handler(data))
-    
-    async def _lidar_handler(self, data):
-        if self.scan_queue.full():
-            try:
-                self.scan_queue.get_nowait()
-
-            except Empty:
-                pass
-
-        try:
-            mov = await self.wait_for_odometry_at(data.timestamp, max_retries=3)
-            
-            if mov is None:
-                return
-
-            self.scan_queue.put_nowait((
-                mov.x,
-                mov.y,
-                mov.theta,
-                data.distances,
-                data.angles,
-            ))
-
-        except Exception:
-            pass
-
-    @aparsedata(TimedMovement3DoF)
-    async def on_motorcontroller_odometry(self, data):
-        self._odometry.append(data)
-        self._odometry_event.set()
-    
-    # anon message that sends anon reply message with
-    # list of saves in json format
-    #
-    # accepts a field for reply as an argument
-    @aparsedata(datatypes.String)
-    async def on_saves(self, data: str, from_node: str):
-        saves = os.listdir(self.saves_path)
-        await self.anon(
-            from_node,
-            data,
-            datatypes.String.encode(
-                json.dumps(saves)
-            ),
-            force_to_tcp=True,
-        )
-    
-    async def on_save(self, data: None, from_node: str):
-        fname = os.path.join(self.saves_path, f"save_{int(time.time())}.vgs")
-        self.scan_queue.put(f"save|{fname}")
-    
-    @aparsedata(datatypes.String)
-    async def on_load(self, data: str, from_node: str):
-        saves = os.listdir(self.saves_path)
-        
-        if data not in saves:
-            return
-        
-        fname = os.path.join(self.saves_path, data)
-        self.scan_queue.put(f"load|{fname}")
-    
-    async def wait_for_odometry_at(self, ts: float, max_retries: int = 2):        
+    async def _wait_for_odometry_at(self, ts: float, max_retries: int = 2):        
         for i, odom in enumerate(self._odometry):
             if odom.timestamp >= ts:
                 if i > 0:
@@ -302,16 +356,25 @@ class SLAMClient(AsyncROSClient):
         return None
 
     def _normalize_angle(self, angle):
+        """
+        Normalizes angle to [-pi; pi] range
+        """
+        
         return (angle + np.pi) % (2*np.pi) - np.pi
     
     def _interpolate(self, odom, prev_odom, timestamp):
+        """
+        Interpolates between two odometry positions by time
+        """
+        
         if odom is None or prev_odom is None:
             return odom.movement if odom is not None else None
+        
         if odom.timestamp == prev_odom.timestamp:
             return odom.movement
 
-        mov = odom.movement
-        prev_mov = prev_odom.movement
+        mov = odom
+        prev_mov = prev_odom
         alpha = (timestamp - prev_odom.timestamp) / (odom.timestamp - prev_odom.timestamp)
 
         x = prev_mov.x + alpha * (mov.x - prev_mov.x)
@@ -319,9 +382,13 @@ class SLAMClient(AsyncROSClient):
         dtheta = self._normalize_angle(mov.theta - prev_mov.theta)
         theta = prev_mov.theta + alpha * dtheta
 
-        return Movement3DoF(x=x, y=y, theta=self._normalize_angle(theta))
+        return TimedPose3DoF(x=x, y=y, theta=self._normalize_angle(theta), timestamp=timestamp)
 
     def stop(self):
+        """
+        Stop SLAM client
+        """
+        
         self.running.clear()
         
         try:
@@ -351,9 +418,11 @@ async def main():
         await client.wait()
     
         # miniros allows you to send and receive data with any type you want
-        # here we are sending pre-encoded Movement bytes but on the other end
-        # we will parse it as Movement using @aparsedata
-        pos_topic = await client.topic("pose", datatypes.Bytes)
+        # here we are sending pre-encoded data using Bytes
+        pos_topic = await client.topic(
+            naming.Topic.SLAM_POSE, 
+            datatypes.Bytes
+        )
 
         while client.running.is_set():
             if client.last_pos is not None and last_seen_pos != client._pos_version:
@@ -367,7 +436,10 @@ async def main():
         
         await client.wait()
 
-        map_topic = await client.topic("map", datatypes.Bytes)
+        map_topic = await client.topic(
+            naming.Topic.SLAM_OCCUPANCY_GRID, 
+            datatypes.Bytes
+        )
         
         while client.running.is_set():
             if client.last_map is not None and last_seen_map != client._map_version:
@@ -376,16 +448,16 @@ async def main():
 
             await asyncio.sleep(map_post_delay)
 
-    async def run():
-        await client.wait()
+    post_pos_task = asyncio.create_task(post_pos_job())    
+    post_map_task = asyncio.create_task(post_map_job())
 
     try:
         await asyncio.gather(
             client.run(),
+            client.wait(),
             client.consume_results(),
-            post_map_job(),
-            post_pos_job(),
-            run(),
+            post_pos_task,
+            post_map_task
         )
 
     finally:

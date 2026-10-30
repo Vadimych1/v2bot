@@ -1,4 +1,4 @@
-from miniros import AsyncROSClient, datatypes
+from miniros import AsyncROSClient, datatypes, naming
 from miniros_configurator import get_config
 
 import cv2 as cv
@@ -6,8 +6,8 @@ import asyncio
 
 
 class CameraClient(AsyncROSClient):
-    def __init__(self, ip="localhost", port=3000, _parse_handlers=True):
-        super().__init__("camera", ip, port, _parse_handlers)
+    def __init__(self, ip="localhost", port=3000):
+        super().__init__(naming.Node.CAMERA, ip, port)
 
 
 async def main():
@@ -16,7 +16,10 @@ async def main():
     async def run():
         await client.wait()
         
-        camera_topic = await client.topic("image", datatypes.OpenCVImage)
+        camera_topic = await client.topic(
+            naming.Topic.CAM_FRAME_RGB,
+            datatypes.OpenCVImage
+        )
         cap = cv.VideoCapture(get_config("camera.device_idx"))
 
         try:

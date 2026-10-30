@@ -6,10 +6,8 @@ import math, random
 import numpy as np
 import cv2 as cv
 
-from miniros import AsyncROSClient
-from miniros.util.decorators import aparsedata
-from miniros_slam.source.datatypes import SLAMOffsetMap
-from miniros.util.datatypes import TimedMovement3DoF, NumpyArray, Vector
+from miniros.util.datatypes import TimedPose3DoF, OccupancyGrid, Goal2D, NumpyArray
+from miniros import AsyncROSClient, naming, aparsedata
 from miniros_configurator import get_config
 
 from dataclasses import dataclass
@@ -88,8 +86,8 @@ class _RRTNode:
     children: list[int]    
 
 class PathPlanner(AsyncROSClient):
-    def __init__(self, ip="localhost", port=3000, _parse_handlers=True):
-        super().__init__("pathplanner", ip, port, _parse_handlers)
+    def __init__(self, ip="localhost", port=3000):
+        super().__init__(naming.Node.PATH_PLANNER, ip, port)
 
         self.robot_radius_m = get_config("robot_radius")
 
@@ -130,6 +128,25 @@ class PathPlanner(AsyncROSClient):
         
         self._greedy_shortcut_max_lookahead = get_config("path_planner.pathfinder.greedy_shortcut_max_lookahead")
         self._path_smooth_iter = get_config("path_planner.pathfinder.path_smooth_iter")
+        
+        # topics
+        self.add_topic_handler(
+            self.occupancy_grid_handler,
+            naming.Node.SLAM,
+            naming.Topic.SLAM_OCCUPANCY_GRID,
+        )
+        
+        self.add_topic_handler(
+            self.pose_handler,
+            naming.Node.SLAM,
+            naming.Topic.SLAM_POSE,
+        )
+        
+        self.add_topic_handler(
+            self.goal_handler,
+            naming.Node.GOAL_MANAGER,
+            naming.Topic.GM_GOAL,
+        )
 
     def _dilate_grid(self, grid) -> bool:
         if grid is None:
@@ -471,19 +488,8 @@ class PathPlanner(AsyncROSClient):
 
         return None
 
-    @aparsedata(SLAMOffsetMap)
-    async def on_slam_map(self, map):
-        """
-        map: SLAMOffsetMap
-        (see v2bot/src/*_slam/src/source/datatypes.py)
-        """
-
-        # "grid": NumpyArray,
-        # "width": Int,
-        # "height": Int,
-        # "offset_x": Int,
-        # "offset_y": Int,
-        # "resolution": Float,
+    @aparsedata(OccupancyGrid)
+    async def occupancy_grid_handler(self, map):
         self.grid = map.grid
         self.width = map.width
         self.height = map.height
@@ -491,12 +497,12 @@ class PathPlanner(AsyncROSClient):
         self.offset_y = map.offset_y
         self.resolution = map.resolution
 
-    @aparsedata(TimedMovement3DoF)
-    async def on_slam_pose(self, pose):
-        self.start_pos = (pose.movement.x, pose.movement.y)
+    @aparsedata(TimedPose3DoF)
+    async def pose_handler(self, pose):
+        self.start_pos = (pose.x, pose.y)
 
-    @aparsedata(Vector)
-    async def on_goalmanager_currentgoal(self, goal: Vector):
+    @aparsedata(Goal2D)
+    async def goal_handler(self, goal):
         self.end_pos = (goal.x, goal.y)
 
 
@@ -517,7 +523,10 @@ async def main():
     async def run():
         await client.wait()
 
-        path_topic = await client.topic("globalpath", NumpyArray)
+        path_topic = await client.topic(
+            naming.Topic.PP_PATH, 
+            NumpyArray,
+        )
 
         prev_goal = None
         k = 0
@@ -585,8 +594,13 @@ async def main():
                     print(f"[] Built path in {build_end - build_start} seconds")
 
                 prev_goal = client.end_pos
+                
+    run_task = asyncio.create_task(run())
 
-    await asyncio.gather(client.run(), run())
+    await asyncio.gather(
+        client.run(),
+        run_task
+    )
 
 
 if __name__ == "__main__":

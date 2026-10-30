@@ -8,8 +8,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 import uvicorn
 
-from miniros import AsyncROSClient, datatypes, aparsedata
-from miniros_slam.source.datatypes import SLAMOffsetMap
+from miniros import AsyncROSClient, datatypes, naming, aparsedata
+from miniros.util.datatypes import OccupancyGrid, Goal2D, TimedCmdVel3DoF, TimedPose3DoF, TimedOdometry3DoF
 from miniros_configurator import get_config
 
 import importlib.resources
@@ -19,8 +19,8 @@ app = FastAPI()
 
 class GoalManagerClient(AsyncROSClient):
 
-    def __init__(self, ip="localhost", port=3000, _parse_handlers=True):
-        super().__init__("goalmanager", ip, port, _parse_handlers)
+    def __init__(self, ip="localhost", port=3000):
+        super().__init__(naming.Node.GOAL_MANAGER, ip, port)
 
         self.goal_topic = None
 
@@ -38,24 +38,55 @@ class GoalManagerClient(AsyncROSClient):
         self._obstacle_upper_threshold = get_config("obstacle_upper_threshold")
         self._free_lower_threshold = get_config("free_lower_threshold")
 
-    @aparsedata(datatypes.Vector)
-    async def on_motioncontroller_cmdvel(self, data: datatypes.Vector):
-        self.latest_cmdvel = {"linear": float(data.x), "angular": float(data.y)}
+        # topics
+        self.add_topic_handler(self.cmdvel_handler, 
+            naming.Node.MOTION_CONTROLLER,
+            naming.Topic.MC_CMDVEL,
+        )
+        
+        self.add_topic_handler(self.occupancy_grid_handler,
+            naming.Node.SLAM,
+            naming.Topic.SLAM_OCCUPANCY_GRID,
+        )
+        
+        self.add_topic_handler(self.pose_handler,
+            naming.Node.SLAM,
+            naming.Topic.SLAM_POSE,
+        )
+        
+        self.add_topic_handler(self.odometry_handler,
+            naming.Node.MOTOR_CONTROLLER,
+            naming.Topic.O_POSE,
+        )
+        
+        self.add_topic_handler(self.path_handler,
+            naming.Node.PATH_PLANNER,
+            naming.Topic.PP_PATH,
+        )
+        
+        # anon
+        self.add_anon_handler(
+            self.saves_handler, 
+            "saves",
+        )
 
+    @aparsedata(TimedCmdVel3DoF)
+    async def cmdvel_handler(self, data):
+        self.latest_cmdvel = {"linear": float(data.tangent), "angular": float(data.angular)}
         await self.broadcast({"type": "cmdvel", "cmdvel": self.latest_cmdvel})
 
-    @aparsedata(SLAMOffsetMap)
-    async def on_slam_map(self, data):
+    @aparsedata(OccupancyGrid)
+    async def occupancy_grid_handler(self, data):
         self.latest_map = data
         await self.broadcast_map(data)
         
-    @aparsedata(datatypes.TimedMovement3DoF)
-    async def on_slam_pose(self, data):
+    @aparsedata(TimedPose3DoF)
+    async def pose_handler(self, data):
         self.saved_pose = self.latest_odometry_pose
         self.latest_slam_pose = {
-            "x": data.movement.x,
-            "y": data.movement.y,
-            "heading": data.movement.theta,
+            "x": data.x,
+            "y": data.y,
+            "heading": data.theta,
         }
         
         await self.broadcast({
@@ -63,12 +94,12 @@ class GoalManagerClient(AsyncROSClient):
             "pose": self.latest_slam_pose
         })
 
-    @aparsedata(datatypes.TimedMovement3DoF)
-    async def on_motorcontroller_odometry(self, data):
+    @aparsedata(TimedOdometry3DoF)
+    async def odometry_handler(self, data):
         self.latest_odometry_pose = {
-            "x": float(data.movement.x),
-            "y": float(data.movement.y),
-            "heading": float(data.movement.theta),
+            "x": float(data.x),
+            "y": float(data.y),
+            "heading": float(data.theta),
         }
         
         if self.latest_slam_pose != None and self.saved_pose != None:
@@ -81,7 +112,7 @@ class GoalManagerClient(AsyncROSClient):
         await self.broadcast({"type": "pose", "pose": self.latest_pose})
 
     @aparsedata(datatypes.NumpyArray)
-    async def on_pathplanner_globalpath(self, path: np.ndarray):
+    async def path_handler(self, path: np.ndarray):
         self.latest_path = [
             {"x": float(point[0]), "y": float(point[1])} for point in path
         ]
@@ -89,7 +120,7 @@ class GoalManagerClient(AsyncROSClient):
         await self.broadcast({"type": "path", "path": self.latest_path})
 
     @aparsedata(datatypes.String)
-    async def on_savesreply(self, data: str, from_node: str):
+    async def saves_handler(self, data: str, from_node: str):
         try:
             saves = json.loads(data)
         
@@ -102,24 +133,22 @@ class GoalManagerClient(AsyncROSClient):
 
     async def trigger_saves_list(self):
         await self.anon(
-            "slam", 
+            naming.Node.SLAM, 
             "saves", 
-            datatypes.String.encode("savesreply"),
-            force_to_tcp=True,
+            b"saves",
         )
     
     async def trigger_save(self):
         await self.anon(
-            "slam", 
+            naming.Node.SLAM, 
             "save", 
             b"!",
-            force_to_tcp=True,
         )
         asyncio.create_task(self._refresh_saves_later(1.0))
     
     async def trigger_load(self, name: str):
         await self.anon(
-            "slam",
+            naming.Node.SLAM,
             "load",
             datatypes.String.encode(name),
             force_to_tcp=True,
@@ -236,7 +265,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 y = float(message["y"])
 
                 if client.goal_topic is not None:
-                    await client.goal_topic.post(datatypes.Vector(x, y, 0))
+                    await client.goal_topic.post(Goal2D(x=x, y=y))
             
             elif message_type == "save":
                 await client.trigger_save()
@@ -276,7 +305,10 @@ async def web_task():
 async def main():
     async def _job():
         await client.wait()
-        client.goal_topic = await client.topic("currentgoal", datatypes.Vector)
+        client.goal_topic = await client.topic(
+            naming.Topic.GM_GOAL, 
+            Goal2D
+        )
 
     await asyncio.gather(ros_task(), web_task(), _job())
 

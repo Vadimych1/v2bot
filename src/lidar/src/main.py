@@ -7,7 +7,7 @@ import signal
 import multiprocessing as mp
 from queue import Empty
 
-from miniros import AsyncROSClient, datatypes
+from miniros import AsyncROSClient, datatypes, naming
 from miniros_configurator import get_config
 
 
@@ -49,7 +49,7 @@ def scan_worker(port: str, baudrate: int, running, conn):
 
 class LidarClient(AsyncROSClient):
     def __init__(self, ip="localhost", port=3000):
-        super().__init__("lidar", ip, port)
+        super().__init__(naming.Node.LIDAR, ip, port)
 
         win_port = get_config("lidar.win_port")
         ldr_port = get_config("lidar.port")
@@ -65,7 +65,7 @@ class LidarClient(AsyncROSClient):
 
         self.running = mp.Event()
 
-    def scans_job(self):
+    def start_scans_job(self):
         if self.lidar_proc is not None and self.lidar_proc.is_alive():
             return
         
@@ -93,22 +93,14 @@ class LidarClient(AsyncROSClient):
                 await asyncio.sleep(0.005)
         
         return None
-        
-        # loop = asyncio.get_running_loop()
-        
-        # try:
-        #     data = await loop.run_in_executor(None, self.lidar_queue.get, True, 3)
-        #     return data
-        # except Empty:
-        #     return None
-
+    
     async def on_ping(self, _, node):
         self.last_ping_time = time.time()
 
 
 async def main():
     client = LidarClient()
-    client.scans_job()
+    client.start_scans_job()
 
     def shutdown(sig, frame):
         client.running.clear()
@@ -126,7 +118,7 @@ async def main():
         
         await client.wait()
 
-        ldr_topic = await client.topic("lidar", datatypes.Bytes)
+        ldr_topic = await client.topic(naming.Topic.L_SCAN, datatypes.Bytes)
 
         while client.running.is_set():
             if client.lidar_proc is None or not client.lidar_proc.is_alive():

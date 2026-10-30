@@ -6,8 +6,8 @@ import asyncio
 import time
 
 from miniros_motor_controller.source.vserial import ArduinoSerial
-from miniros.util.decorators import aparsedata
-from miniros import AsyncROSClient, datatypes
+from miniros.util.datatypes import CmdVel3DoF, OdometrySpeeds3DoF, TimedOdometry3DoF
+from miniros import AsyncROSClient, naming, aparsedata
 from miniros_configurator import get_config
 
 
@@ -26,8 +26,8 @@ class TrackedRobotIK:
 
 
 class MotorControllerClient(AsyncROSClient):
-    def __init__(self, ip="localhost", port=3000, _parse_handlers=True):
-        super().__init__("motorcontroller", ip, port, _parse_handlers)
+    def __init__(self, ip="localhost", port=3000):
+        super().__init__(naming.Node.MOTOR_CONTROLLER, ip, port)
 
         # get port based on system
         # for testing compatibility
@@ -53,12 +53,18 @@ class MotorControllerClient(AsyncROSClient):
 
         self.latest_cmd: tuple[float, float] | None = None
         self.cmd_event = asyncio.Event()
+        
+        # topics
+        self.add_topic_handler(self.cmdvel_handler,
+            naming.Node.MOTION_CONTROLLER,
+            naming.Topic.MC_CMDVEL,
+        )
 
-    @aparsedata(datatypes.Vector)
-    async def on_motioncontroller_cmdvel(self, data: datatypes.Vector):
+    @aparsedata(CmdVel3DoF)
+    async def cmdvel_handler(self, data):
         self.last_update = time.time()
 
-        v, w = data.x, data.y
+        v, w = data.tangent, data.angular
         self.latest_cmd = (v, w)
         self.cmd_event.set()
         
@@ -101,8 +107,14 @@ async def main():
     async def run():
         await client.wait()
 
-        odometry_topic = await client.topic("odometry", datatypes.TimedMovement3DoF)
-        speeds_topic = await client.topic("velocity", datatypes.Vector)
+        odometry_topic = await client.topic(
+            naming.Topic.O_POSE, 
+            TimedOdometry3DoF
+        )
+        speeds_topic = await client.topic(
+            naming.Topic.O_VELOCITY,
+            OdometrySpeeds3DoF
+        )
 
         while is_running:
             await client.serial.odometry_event.wait()
@@ -115,16 +127,20 @@ async def main():
                 x, y, theta, v, w = odom
 
                 await odometry_topic.post(
-                    datatypes.TimedMovement3DoF(
+                    TimedOdometry3DoF(
                         timestamp=time.time(),
-                        movement=datatypes.Movement3DoF(
-                            x=x,
-                            y=y,
-                            theta=-theta,
-                        ),
+                        x=x,
+                        y=y,
+                        theta=-theta,
                     )
                 )
-                await speeds_topic.post(datatypes.Vector(v, w, 0))
+                await speeds_topic.post(
+                    OdometrySpeeds3DoF(
+                        tangent=v,
+                        normal=0.0,
+                        angular=w, 
+                    )
+                )
 
         await client.stop()
 

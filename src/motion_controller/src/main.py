@@ -4,13 +4,11 @@ import skfmm
 import math
 import time
 
-import asyncio
-from miniros import AsyncROSClient
-from miniros.util.datatypes import NumpyArray, Vector, TimedMovement3DoF
-from miniros_slam.source.datatypes import SLAMOffsetMap
-from miniros.util.decorators import aparsedata
+from miniros import AsyncROSClient, naming, aparsedata
+from miniros.util.datatypes import NumpyArray, CmdVel3DoF, TimedPose3DoF, OccupancyGrid
+from miniros.util.datatypes import TimedOdometry3DoF, OdometrySpeeds3DoF
 from miniros_configurator import get_config
-
+import asyncio
 
 class MotionControllerConfig:
     def __init__(self):
@@ -63,29 +61,13 @@ class MotionControllerConfig:
         self.fmm_map_change_threshold = get_config("motion_controller.fmm_map_change_threshold")
 
 class MotionController(AsyncROSClient):
-    """
-    Motion controller node for vbot
-
-    subs to:
-    - slam/map
-    - slam/pose
-    - lidar/lidar
-    - pathplanner/globalpath
-
-    posts:
-    - motioncontroller/cmdvel
-
-    Predicts current position based on speed integration and autocorrects
-    """
-
     def __init__(
         self,
         config: MotionControllerConfig,
         ip="localhost",
         port=3000,
-        _parse_handlers=True,
     ):
-        super().__init__("motioncontroller", ip, port, _parse_handlers)
+        super().__init__(naming.Node.MOTION_CONTROLLER, ip, port)
 
         self.config = config
 
@@ -140,6 +122,32 @@ class MotionController(AsyncROSClient):
         
         self._edt_busy = False
         self._fmm_busy = False
+        
+        # topics
+        self.add_topic_handler(self.occupancy_grid_handler,
+            naming.Node.SLAM,
+            naming.Topic.SLAM_OCCUPANCY_GRID,
+        )
+        
+        self.add_topic_handler(self.pose_handler,
+            naming.Node.SLAM,
+            naming.Topic.SLAM_POSE,
+        )
+        
+        # self.add_topic_handler(self.odometry_handler,
+        #     naming.Node.MOTOR_CONTROLLER,
+        #     naming.Topic.O_POSE,
+        # )
+        
+        self.add_topic_handler(self.odom_velocity_handler,
+            naming.Node.MOTOR_CONTROLLER,
+            naming.Topic.O_VELOCITY,
+        )
+        
+        self.add_topic_handler(self.path_handler,
+            naming.Node.PATH_PLANNER,
+            naming.Topic.PP_PATH,
+        )
 
     def _world_to_pixel(self, wx: float, wy: float, resolution, of_x, of_y):
         px = math.floor(wx / resolution + of_x)
@@ -586,6 +594,10 @@ class MotionController(AsyncROSClient):
             self._fmm_busy = False
 
     def compute_control(self):
+        """
+        Choose best cmdvel using DWA (Dynamic Window Approach) algorithm 
+        """
+        
         snap = self._map_snapshot
         fmm_snap = self._fmm_snapshot
         
@@ -703,31 +715,26 @@ class MotionController(AsyncROSClient):
 
         return self._smoothed_v, self._smoothed_w
 
-    @aparsedata(SLAMOffsetMap)
-    async def on_slam_map(self, map):  # SLAMOffsetMap        
-        asyncio.create_task(self._handle_map(map))
-
-    async def _handle_map(self, map):
+    @aparsedata(OccupancyGrid)
+    async def occupancy_grid_handler(self, map):
         map_changed = await asyncio.to_thread(self._prepare_map, map)
         if map_changed:
             await asyncio.to_thread(self._rebuild_fmm)
 
-    @aparsedata(TimedMovement3DoF)
-    async def on_slam_pose(self, pose):
-        mov = pose.movement
+    @aparsedata(TimedPose3DoF)
+    async def pose_handler(self, pose):
+        self.robot_x = pose.x
+        self.robot_y = pose.y
+        self.robot_heading = pose.theta
         
-        self.robot_x = mov.x
-        self.robot_y = mov.y
-        self.robot_heading = mov.theta
-        
-        self.last_slam_pose = mov
+        self.last_slam_pose = pose
         self.saved_odom_pose = self.last_odom_pose
         self._last_odom_ts = time.monotonic()
     
-    # @aparsedata(TimedMovement3DoF)
-    # async def on_motorcontroller_odometry(self, odom):
+    # @aparsedata(TimedOdometry3DoF)
+    # async def odometry_handler(self, odom):
     #     self._last_odom_ts = time.monotonic()
-    #     self.last_odom_pose = odom.movement
+    #     self.last_odom_pose = odom
         
     #     if self.last_slam_pose is not None and self.saved_odom_pose != None:
     #         anchor_slam = self.last_slam_pose
@@ -740,13 +747,13 @@ class MotionController(AsyncROSClient):
     #             anchor_slam.theta + self._normalize_angle(cur_odom.theta - anchor_odom.theta)
     #         )
 
-    @aparsedata(Vector)
-    async def on_motorcontroller_velocity(self, velocity: Vector):
-        self.current_v = velocity.x
-        self.current_w = velocity.y
+    @aparsedata(OdometrySpeeds3DoF)
+    async def odom_velocity_handler(self, velocity):
+        self.current_v = velocity.tangent
+        self.current_w = velocity.angular
 
     @aparsedata(NumpyArray)
-    async def on_pathplanner_globalpath(self, path: np.ndarray):
+    async def path_handler(self, path: np.ndarray):
         rebuild_fmm = self.global_path is None or np.linalg.norm(self.global_path[-1] - path[-1]) > 0.2  
         self.global_path = path
 
@@ -761,7 +768,11 @@ async def main():
     async def run_path_tracker():
         await client.wait()
 
-        cmdvel_topic = await client.topic("cmdvel", Vector)
+        cmdvel_topic = await client.topic(
+            naming.Topic.MC_CMDVEL, 
+            CmdVel3DoF
+        )
+        
         map_max_age = get_config("motion_controller.map_max_age")
         odom_max_age = get_config("motion_controller.odometry_max_age")
 
@@ -778,7 +789,11 @@ async def main():
             
             ts = time.monotonic()
             if ts - client._last_odom_ts >= odom_max_age or ts - client._last_map_ts >= map_max_age:
-                await cmdvel_topic.post(Vector(0, 0, 0))
+                await cmdvel_topic.post(CmdVel3DoF(
+                    tangent=0.0, 
+                    normal=0.0, 
+                    angular=0.0,
+                ))
                 continue
 
             try:
@@ -787,7 +802,11 @@ async def main():
                 print(f"compute_control failed: {e}", flush=True)
                 v, w = 0.0, 0.0
             
-            await cmdvel_topic.post(Vector(v, w, 0))
+            await cmdvel_topic.post(CmdVel3DoF(
+                tangent=v,
+                normal=0.0,
+                angular=w,
+            ))
 
     path_track = asyncio.create_task(run_path_tracker())
 
