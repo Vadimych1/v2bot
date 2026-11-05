@@ -1,18 +1,23 @@
 import asyncio
-from queue import Empty
-import multiprocessing as mp
-
 import os
 import time
 import json
+
 from miniros_configurator import get_config
+from miniros import MinirosPipe, ProcessPipe, PipeProtocol, NoneDatatype
 from miniros import AsyncROSClient, datatypes, naming, aparsedata
 from miniros.util.datatypes import TimedPose3DoF, TimedOdometry3DoF, OccupancyGrid, Lidar2D
 
 import numpy as np
 from vgslam import VGSLAM, PositionedCloud, scan_to_cloud
 
-def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
+OdometryLidar2D = datatypes.NamedComposedDatatype({
+    "lidar": datatypes.Lidar2D,
+    "odom": TimedOdometry3DoF,
+}, "OdometryLidar2D")
+protocol = PipeProtocol([OdometryLidar2D, NoneDatatype, datatypes.String])
+
+def scan_worker(pipe: ProcessPipe, running):
     map_counter = 0
     
     map_resolution = get_config("vgslam.map_resolution")
@@ -27,9 +32,9 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
     nq_start_time = time.time()
 
     try:
-        while True:        
+        while running.is_set():
             try:
-                scan = input_queue.get(timeout=1)
+                scan = pipe.read()
 
                 # shutdown signal
                 if scan is None:
@@ -49,14 +54,15 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
 
                         else:
                             print(f"unknown command: {t} ({s})", flush=True)
+                            
                     except Exception as e:
-                        print(f"slam_worker: {e}", flush=True)
+                        print(f"slam_worker: error: {e}", flush=True)
                 
                     continue
 
                 x, y, theta, distances, angles = scan
 
-            except Empty:
+            except TimeoutError:
                 continue
 
             nq += 1
@@ -94,7 +100,6 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
                 theta=pose[2],
                 timestamp=time.time()
             )
-            mmap_data = None
             
             if (nq + 1) % 30 == 0:
                 print(f"Running at {nq / (time.time() - nq_start_time)}Hz", flush=True)
@@ -111,10 +116,10 @@ def slam_worker(input_queue: mp.Queue, output_queue: mp.Queue):
                     resolution=grid.resolution,
                 )
 
-                mmap_data = OccupancyGrid.encode(mmap_data)
+                pipe.write(mmap_data)
 
             map_counter += 1
-            output_queue.put((TimedPose3DoF.encode(movement_msg), mmap_data))
+            pipe.write(movement_msg)
 
     except Exception as e:
         print(f"slam_worker exiting {e}", flush=True)
@@ -142,7 +147,7 @@ class FixedSizeList(list):
         while len(self) > self.maxlen:
             self.pop(0)
 
-
+# TODO: move to miniros.processing # TODO: TODO: TODO:
 class SLAMClient(AsyncROSClient):
     def __init__(self, ip="localhost", port=3000):
         super().__init__(naming.Node.SLAM, ip, port)
@@ -151,14 +156,16 @@ class SLAMClient(AsyncROSClient):
         self.dtheta = 0
         self.dt = 0
 
-        self.scan_queue = mp.Queue(get_config("vgslam.miniros.scan_queue_len"))
-        self.result_queue = mp.Queue()
+        self.pipe = MinirosPipe(
+            protocol=protocol, 
+            process_function=scan_worker, 
+            duplex=True
+        )
 
         self.last_pos: bytes | None = None
         self.last_map: bytes | None = None
 
         self.running = asyncio.Event()
-        self.slam_proc = None
         
         self._odometry_event = asyncio.Event()
         self._odometry = FixedSizeList(10)
@@ -198,13 +205,6 @@ class SLAMClient(AsyncROSClient):
         """
         Handles lidar messages
         """
-        
-        if self.scan_queue.full():
-            try:
-                self.scan_queue.get_nowait()
-
-            except Empty:
-                pass
 
         try:
             mov = await self._wait_for_odometry_at(data.timestamp, max_retries=3)
@@ -212,12 +212,9 @@ class SLAMClient(AsyncROSClient):
             if mov is None:
                 return
 
-            self.scan_queue.put_nowait((
-                mov.x,
-                mov.y,
-                mov.theta,
-                data.distances,
-                data.angles,
+            self.pipe.write(OdometryLidar2D(
+                lidar=data,
+                odom=mov,
             ))
 
         except Exception:
@@ -249,8 +246,7 @@ class SLAMClient(AsyncROSClient):
             data,
             datatypes.String.encode(
                 json.dumps(saves)
-            ),
-            force_to_tcp=True,
+            )
         )
     
     async def anon_save_handler(self, data: None, from_node: str):
@@ -261,7 +257,7 @@ class SLAMClient(AsyncROSClient):
         """
         
         fname = os.path.join(self.saves_path, f"save_{int(time.time())}.vgs")
-        self.scan_queue.put(f"save|{fname}")
+        self.pipe.write(f"save|{fname}", datatypes.String)
     
     @aparsedata(datatypes.String)
     async def anon_load_handler(self, data: str, from_node: str):
@@ -277,51 +273,45 @@ class SLAMClient(AsyncROSClient):
             return
         
         fname = os.path.join(self.saves_path, data)
-        self.scan_queue.put(f"load|{fname}")
+        self.pipe.write(f"load|{fname}", datatypes.String)
     
     ## helper functions
-    def start_slam_process(self):
-        """
-        Start SLAM worker process
-        """
-        
-        self.running.set()
-        self.slam_proc = mp.Process(target=slam_worker, args=(self.scan_queue, self.result_queue), daemon=True)
-        self.slam_proc.start()
+    def startup(self):
+        self.pipe.start()
+
+    def shutdown(self):
+        self.pipe.stop()
 
     async def consume_results(self):
-        """
-        Start pulling SLAM localization results from the worker process
-        
-        Automatically restarts process if it dies
-        """
-        
         while self.running.is_set():
-            if self.slam_proc is None or not self.slam_proc.is_alive():
-                print("slam_worker died - restarting", flush=True)
+            if not self.pipe.is_alive():
+                print("slam_worker died. restarting", flush=True)
                 
                 # TODO: now restarting slam means that the map and slam's internal graph
                 # are fully reset without any ability to recover; VGSLAM has a save/load state 
                 # feature that could be possibly used to reload state from file if SLAM has
                 # restarted while working. will be added in the next update
-                self.start_slam_process()
+                self.startup()
                 await asyncio.sleep(1.0)
                 continue
             
             try:
-                res = self.result_queue.get_nowait()
-            except Empty:
-                await asyncio.sleep(0.001)
-                continue
-        
-            movement_data, mmap_data = res
-
-            self.last_pos = movement_data
-            self._pos_version += 1
+                res = await self.pipe.read_async()
             
-            if mmap_data is not None:
-                self.last_map = mmap_data
+            except TimeoutError:
+                await asyncio.sleep(0.05)
+                continue
+            
+            if hasattr(res, "parent") and res.parent is datatypes.OccupancyGrid:
                 self._map_version += 1
+                self.last_map = res
+            
+            elif hasattr(res, "parent") and res.parent is datatypes.TimedPose3DoF:
+                self._pos_version += 1
+                self.last_pos = res
+            
+            else:
+                print(f"got invalid response from worker: {res}")
 
     async def _wait_for_odometry_at(self, ts: float, max_retries: int = 2):        
         for i, odom in enumerate(self._odometry):
@@ -384,27 +374,9 @@ class SLAMClient(AsyncROSClient):
 
         return TimedPose3DoF(x=x, y=y, theta=self._normalize_angle(theta), timestamp=timestamp)
 
-    def stop(self):
-        """
-        Stop SLAM client
-        """
-        
-        self.running.clear()
-        
-        try:
-            self.scan_queue.put(None, timeout=1.0)
-        except Exception:
-            pass
-
-        if self.slam_proc:
-            self.slam_proc.join(timeout=3.0)
-            if self.slam_proc.is_alive():
-                self.slam_proc.terminate()
-                self.slam_proc.join(timeout=1.0)
-
 async def main():
     client = SLAMClient()
-    client.start_slam_process()
+    client.startup()
 
     map_post_delay = get_config("vgslam.miniros.map_post_delay")
     pose_post_delay = get_config("vgslam.miniros.pose_post_delay")
@@ -421,7 +393,7 @@ async def main():
         # here we are sending pre-encoded data using Bytes
         pos_topic = await client.topic(
             naming.Topic.SLAM_POSE, 
-            datatypes.Bytes
+            datatypes.TimedPose3DoF,
         )
 
         while client.running.is_set():
@@ -438,7 +410,7 @@ async def main():
 
         map_topic = await client.topic(
             naming.Topic.SLAM_OCCUPANCY_GRID, 
-            datatypes.Bytes
+            datatypes.OccupancyGrid,
         )
         
         while client.running.is_set():
@@ -450,18 +422,18 @@ async def main():
 
     post_pos_task = asyncio.create_task(post_pos_job())    
     post_map_task = asyncio.create_task(post_map_job())
+    consume_results_task = asyncio.create_task(client.consume_results())
 
     try:
         await asyncio.gather(
             client.run(),
-            client.wait(),
-            client.consume_results(),
+            consume_results_task,
             post_pos_task,
             post_map_task
         )
 
     finally:
-        client.stop()
+        client.shutdown()
 
 
 if __name__ == "__main__":

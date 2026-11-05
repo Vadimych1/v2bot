@@ -7,58 +7,58 @@ import time
 from miniros import AsyncROSClient, naming, aparsedata
 from miniros.util.datatypes import NumpyArray, CmdVel3DoF, TimedPose3DoF, OccupancyGrid
 from miniros.util.datatypes import TimedOdometry3DoF, OdometrySpeeds3DoF
-from miniros_configurator import get_config
+from miniros_configurator import get_config as gc
 import asyncio
 
 class MotionControllerConfig:
     def __init__(self):
-        self.max_linear_speed = get_config(
+        self.max_linear_speed = gc(
             "motion_controller.kinematics.max_linear_speed"
         )
-        self.min_linear_speed = get_config(
+        self.min_linear_speed = gc(
             "motion_controller.kinematics.min_linear_speed"
         )
-        self.max_angular_speed = get_config(
+        self.max_angular_speed = gc(
             "motion_controller.kinematics.max_angular_speed"
         )
-        self.max_linear_accel = get_config(
+        self.max_linear_accel = gc(
             "motion_controller.kinematics.max_linear_accel"
         )
-        self.max_angular_accel = get_config(
+        self.max_angular_accel = gc(
             "motion_controller.kinematics.max_angular_accel"
         )
 
-        self.dt = get_config("motion_controller.time.delta")
-        self.predict_time = get_config("motion_controller.time.prediction")
+        self.dt = gc("motion_controller.time.delta")
+        self.predict_time = gc("motion_controller.time.prediction")
 
-        self.num_v_samples = get_config("motion_controller.sampling.v_samples")
-        self.num_w_samples = get_config("motion_controller.sampling.omega_samples")
+        self.num_v_samples = gc("motion_controller.sampling.v_samples")
+        self.num_w_samples = gc("motion_controller.sampling.omega_samples")
 
-        self.robot_radius = get_config("robot_radius")
+        self.robot_radius = gc("robot_radius")
 
-        self.weight_heading = get_config("motion_controller.weights.heading")
-        self.weight_dist = get_config("motion_controller.weights.distance")
-        self.weight_speed = get_config("motion_controller.weights.speed")
-        self.weight_obstacle = get_config("motion_controller.weights.obstacle")
-        self.weight_progress = get_config("motion_controller.weights.progress")
-        self.weight_path = get_config("motion_controller.weights.path")
-        self.weight_decision_deviation = get_config("motion_controller.weights.decision_deviation")
-        self.weight_commitment = get_config("motion_controller.weights.commitment")
-        self.weight_reverse = get_config("motion_controller.weights.reverse")
+        self.weight_heading = gc("motion_controller.weights.heading")
+        self.weight_dist = gc("motion_controller.weights.distance")
+        self.weight_speed = gc("motion_controller.weights.speed")
+        self.weight_obstacle = gc("motion_controller.weights.obstacle")
+        self.weight_progress = gc("motion_controller.weights.progress")
+        self.weight_path = gc("motion_controller.weights.path")
+        self.weight_decision_deviation = gc("motion_controller.weights.decision_deviation")
+        self.weight_commitment = gc("motion_controller.weights.commitment")
+        self.weight_reverse = gc("motion_controller.weights.reverse")
         
-        self.commitment_w_threshold = get_config("motion_controller.weights.commitment_w_threshold")
+        self.commitment_w_threshold = gc("motion_controller.weights.commitment_w_threshold")
         
-        self.obstacle_side_factor = get_config("motion_controller.weights.obstacle_side_factor")
-        self.min_viable_speed = get_config("motion_controller.kinematics.min_viable_speed")
+        self.obstacle_side_factor = gc("motion_controller.weights.obstacle_side_factor")
+        self.min_viable_speed = gc("motion_controller.kinematics.min_viable_speed")
 
-        self.goal_tolerance = get_config("motion_controller.goal_tolerance")
-        self.lookahead_distance = get_config("motion_controller.lookahead_distance")
-        self.inf_mul = get_config("motion_controller.influence_distance_multiplier")
+        self.goal_tolerance = gc("motion_controller.goal_tolerance")
+        self.lookahead_distance = gc("motion_controller.lookahead_distance")
+        self.inf_mul = gc("motion_controller.influence_distance_multiplier")
 
-        self.alpha_v = get_config("motion_controller.smoothing.alpha_v")
-        self.alpha_w = get_config("motion_controller.smoothing.alpha_w")
+        self.alpha_v = gc("motion_controller.smoothing.alpha_v")
+        self.alpha_w = gc("motion_controller.smoothing.alpha_w")
 
-        self.fmm_map_change_threshold = get_config("motion_controller.fmm_map_change_threshold")
+        self.fmm_map_change_threshold = gc("motion_controller.fmm_map_change_threshold")
 
 class MotionController(AsyncROSClient):
     def __init__(
@@ -112,8 +112,8 @@ class MotionController(AsyncROSClient):
         # global path from path_planner
         self.global_path = None
 
-        self._obstacle_upper_threshold = get_config("obstacle_upper_threshold")
-        self._free_lower_threshold = get_config("free_lower_threshold")
+        self._obstacle_upper_threshold = gc("obstacle_upper_threshold")
+        self._free_lower_threshold = gc("free_lower_threshold")
 
         self._last_map_ts = -1
         self._last_odom_ts = -1
@@ -763,7 +763,7 @@ class MotionController(AsyncROSClient):
 
 async def main():
     client = MotionController(config=MotionControllerConfig())
-    cmdvel_post_delay = get_config("motion_controller.miniros.cmdvel_post_delay")
+    cmdvel_post_delay = gc("motion_controller.miniros.cmdvel_post_delay")
 
     async def run_path_tracker():
         await client.wait()
@@ -773,8 +773,8 @@ async def main():
             CmdVel3DoF
         )
         
-        map_max_age = get_config("motion_controller.map_max_age")
-        odom_max_age = get_config("motion_controller.odometry_max_age")
+        map_max_age = gc("motion_controller.map_max_age")
+        odom_max_age = gc("motion_controller.odometry_max_age")
 
         loop = asyncio.get_running_loop()
         next_tick = loop.time()
