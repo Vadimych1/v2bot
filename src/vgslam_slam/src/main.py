@@ -124,30 +124,6 @@ def scan_worker(pipe: ProcessPipe, running):
     except Exception as e:
         print(f"slam_worker exiting {e}", flush=True)
 
-class FixedSizeList(list):
-    def __init__(self, maxlen, iterable=()):
-        self.maxlen = maxlen
-        super().__init__(iterable)
-        
-        if len(self) > maxlen:
-            del self[: len(self) - maxlen]
-
-    def append(self, item):
-        super().append(item)
-        if len(self) > self.maxlen:
-            self.pop(0)
-
-    def insert(self, index, item):
-        super().insert(index, item)
-        if len(self) > self.maxlen:
-            self.pop(0)
-
-    def extend(self, iterable):
-        super().extend(iterable)
-        while len(self) > self.maxlen:
-            self.pop(0)
-
-# TODO: move to miniros.processing # TODO: TODO: TODO:
 class SLAMClient(AsyncROSClient):
     def __init__(self, ip="localhost", port=3000):
         super().__init__(naming.Node.SLAM, ip, port)
@@ -167,8 +143,9 @@ class SLAMClient(AsyncROSClient):
 
         self.running = asyncio.Event()
         
+        self.max_odometry = 10
         self._odometry_event = asyncio.Event()
-        self._odometry = FixedSizeList(10)
+        self._odometry = []
         
         self._pos_version = 0
         self._map_version = 0
@@ -227,6 +204,10 @@ class SLAMClient(AsyncROSClient):
         """
         
         self._odometry.append(data)
+        
+        if len(self._odometry) > self.max_odometry:
+            self._odometry.pop(0)
+        
         self._odometry_event.set()
     
     # anon message that sends anon reply message with
