@@ -15,7 +15,7 @@ OdometryLidar2D = datatypes.NamedComposedDatatype({
     "lidar": datatypes.Lidar2D,
     "odom": TimedOdometry3DoF,
 }, "OdometryLidar2D")
-protocol = PipeProtocol([OdometryLidar2D, NoneDatatype, datatypes.String])
+protocol = PipeProtocol([OdometryLidar2D, NoneDatatype, datatypes.String, datatypes.OccupancyGrid, datatypes.TimedPose3DoF])
 
 def scan_worker(pipe: ProcessPipe, running):
     map_counter = 0
