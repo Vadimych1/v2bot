@@ -64,9 +64,6 @@ class LidarClient(AsyncROSClient):
     def shutdown(self):
         self.pipe.stop()
     
-    async def get_scan_async(self, timeout: float = 1.0) -> bytes | None:
-        return await self.pipe.read_async(timeout=timeout)
-    
     async def on_ping(self, _, __):
         self.last_ping_time = time.time()
 
@@ -84,7 +81,7 @@ async def main():
         
         asyncio.create_task(client.stop())
         client.shutdown()
-        
+    
     async def run():
         nq_start_time = time.time()
         nq = 0
@@ -100,7 +97,7 @@ async def main():
                 await asyncio.sleep(0.5)
                 continue
             
-            lidar = await client.get_scan_async()
+            lidar = await client.pipe.read_async(timeout=1.0)
 
             if lidar is None:
                 continue

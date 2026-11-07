@@ -6,6 +6,16 @@
     "camera": {
         "device_idx": 0
     },
+    "stats": {
+        "occgrid": false,
+        "slam_pose": true,
+        "odom_pose": false,
+        "odom_vel": false,
+        "cmdvel": false,
+        "path": false,
+        "lidar": false,
+        "goal": false
+    },
     "vgslam": {
         "map_resolution": 0.05,
         "voxel_resolution": 0.05,

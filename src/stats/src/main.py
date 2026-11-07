@@ -4,7 +4,7 @@ import base64
 import time
 
 from miniros import AsyncROSClient, datatypes, naming, aparsedata
-from miniros_configurator import get_config
+from miniros_configurator import get_config as gc
 
 # !!!!
 # latencies = [...]
@@ -17,45 +17,53 @@ class StatsClient(AsyncROSClient):
     def __init__(self, ip="localhost", port=3000):
         super().__init__("stats", ip, port)
         
-        self.add_topic_handler(self.on_slam_map,
-            naming.Node.SLAM,
-            naming.Topic.SLAM_OCCUPANCY_GRID,
-        )
+        if gc("stats.occgrid"):
+            self.add_topic_handler(self.on_slam_map,
+                naming.Node.SLAM,
+                naming.Topic.SLAM_OCCUPANCY_GRID,
+            )
         
-        self.add_topic_handler(self.on_slam_pose,
-            naming.Node.SLAM,
-            naming.Topic.SLAM_POSE,
-        )
+        if gc("stats.slam_pose"):
+            self.add_topic_handler(self.on_slam_pose,
+                naming.Node.SLAM,
+                naming.Topic.SLAM_POSE,
+            )
         
-        self.add_topic_handler(self.on_motorcontroller_odometry,
-            naming.Node.MOTOR_CONTROLLER,
-            naming.Topic.O_POSE,
-        )
+        if gc("stats.odom_pose"):
+            self.add_topic_handler(self.on_motorcontroller_odometry,
+                naming.Node.MOTOR_CONTROLLER,
+                naming.Topic.O_POSE,
+            )
         
-        self.add_topic_handler(self.on_motorcontroller_speeds,
-            naming.Node.MOTOR_CONTROLLER,
-            naming.Topic.O_VELOCITY,
-        )
+        if gc("stats.odom_vel"):
+            self.add_topic_handler(self.on_motorcontroller_speeds,
+                naming.Node.MOTOR_CONTROLLER,
+                naming.Topic.O_VELOCITY,
+            )
         
-        self.add_topic_handler(self.on_motioncontroller_cmdvel,
-            naming.Node.MOTION_CONTROLLER,
-            naming.Topic.MC_CMDVEL,
-        )
+        if gc("stats.cmdvel"):
+            self.add_topic_handler(self.on_motioncontroller_cmdvel,
+                naming.Node.MOTION_CONTROLLER,
+                naming.Topic.MC_CMDVEL,
+            )
         
-        self.add_topic_handler(self.on_pathplanner_path,
-            naming.Node.PATH_PLANNER,
-            naming.Topic.PP_PATH,
-        )
+        if gc("stats.path"):
+            self.add_topic_handler(self.on_pathplanner_path,
+                naming.Node.PATH_PLANNER,
+                naming.Topic.PP_PATH,
+            )
         
-        self.add_topic_handler(self.on_lidar_lidar,
-            naming.Node.LIDAR,
-            naming.Topic.L_SCAN,
-        )
+        if gc("stats.lidar"):
+            self.add_topic_handler(self.on_lidar_lidar,
+                naming.Node.LIDAR,
+                naming.Topic.L_SCAN,
+            )
         
-        self.add_topic_handler(self.on_goalmanager_currentgoal,
-            naming.Node.GOAL_MANAGER,
-            naming.Topic.GM_GOAL,
-        )
+        if gc("stats.goal"):
+            self.add_topic_handler(self.on_goalmanager_currentgoal,
+                naming.Node.GOAL_MANAGER,
+                naming.Topic.GM_GOAL,
+            )
     
     def _log_data(self, data: bytes | bytearray, type: str, timestamp: float):
         timestamp = round(timestamp, 2)
@@ -171,7 +179,7 @@ async def main():
 
 
 if __name__ == "__main__":
-    if not get_config("enable_stats"):
+    if not gc("enable_stats"):
         raise Exception("'enable_stats' is set to 'false' in config; enable to collect stats")
     
     try:

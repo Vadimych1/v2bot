@@ -199,14 +199,14 @@ class PathPlanner(AsyncROSClient):
         # for robot to not stuck in the walls
         if (
             self.start_pos is not None
-            and self._distance((wx, wy), self.start_pos) <= (self.robot_radius_m * 0.6)
+            and self.distance((wx, wy), self.start_pos) <= (self.robot_radius_m * 0.6)
         ):
             return True
         
         # for robot to be able to move to end_pos if it is near the wall
         if (
             self.end_pos is not None
-            and self._distance((wx, wy), self.end_pos) <= (self.robot_radius_m * 0.6)
+            and self.distance((wx, wy), self.end_pos) <= (self.robot_radius_m * 0.6)
         ):
             return True
 
@@ -259,13 +259,13 @@ class PathPlanner(AsyncROSClient):
 
         return True
 
-    def _distance(self, a: tuple[float, float], b: tuple[float, float]) -> float:
+    def distance(self, a: tuple[float, float], b: tuple[float, float]) -> float:
         return math.hypot(a[0] - b[0], a[1] - b[1])
 
     def _steer(
         self, from_pos: tuple[float, float], to_pos: tuple[float, float], step: float
     ) -> tuple[float, float]:
-        dist = self._distance(from_pos, to_pos)
+        dist = self.distance(from_pos, to_pos)
 
         if dist <= step:
             return to_pos
@@ -419,14 +419,14 @@ class PathPlanner(AsyncROSClient):
             for idx in near_indices:
                 node = tree[idx]
                 if self._line_of_sight(node.pos, new_pos):
-                    cost_candidate = node.cost + self._distance(node.pos, new_pos)
+                    cost_candidate = node.cost + self.distance(node.pos, new_pos)
                     if cost_candidate < min_cost:
                         min_cost = cost_candidate
                         best_parent = idx
 
             # fallback: nearest not in near_indices (small radius, big step)
             if nearest_idx not in near_indices:
-                cost_candidate = nearest_node.cost + self._distance(nearest_pos, new_pos)
+                cost_candidate = nearest_node.cost + self.distance(nearest_pos, new_pos)
                 if cost_candidate < min_cost:
                     min_cost = cost_candidate
                     best_parent = nearest_idx
@@ -447,7 +447,7 @@ class PathPlanner(AsyncROSClient):
                     continue
 
                 node = tree[idx]
-                cost_via_new = new_node.cost + self._distance(new_pos, node.pos)
+                cost_via_new = new_node.cost + self.distance(new_pos, node.pos)
 
                 if cost_via_new < node.cost and self._line_of_sight(new_pos, node.pos):
                     delta = cost_via_new - node.cost
@@ -461,10 +461,10 @@ class PathPlanner(AsyncROSClient):
 
                     self._propagate_cost_delta(tree, idx, delta)
 
-            if self._distance(
+            if self.distance(
                 new_pos, end_pixel
             ) <= goal_tolerance and self._line_of_sight(new_pos, end_pixel):
-                end_cost = new_node.cost + self._distance(new_pos, end_pixel)
+                end_cost = new_node.cost + self.distance(new_pos, end_pixel)
                 end_node = _RRTNode(pos=end_pixel, parent=new_idx, cost=end_cost, children=[])
                 
                 tree.append(end_node)
@@ -540,13 +540,13 @@ async def main():
                 prev_goal is None
                 or (
                     prev_goal is not None
-                    and client._distance(client.end_pos, prev_goal)
+                    and client.distance(client.end_pos, prev_goal)
                     > min_distance_between_goals
                 )
                 or (
                     k >= max_no_rebuild_time / rebuild_check_time
                     and client.start_pos is not None
-                    and client._distance(client.start_pos, client.end_pos)
+                    and client.distance(client.start_pos, client.end_pos)
                     > min_distance_from_start_to_goal
                 )
             )
