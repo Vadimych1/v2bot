@@ -60,7 +60,9 @@ def scan_worker(pipe: ProcessPipe, running):
                 
                     continue
 
-                x, y, theta, distances, angles = scan
+                pos = scan.odom
+                lidar = scan.lidar
+                x, y, theta, distances, angles = pos.x, pos.y, pos.theta, lidar.distances, lidar.angles
 
             except TimeoutError:
                 continue
