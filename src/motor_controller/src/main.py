@@ -6,8 +6,8 @@ import asyncio
 import time
 
 from miniros_motor_controller.source.vserial import ArduinoSerial
-from miniros.util.decorators import aparsedata
-from miniros import AsyncROSClient, datatypes
+from miniros.util.datatypes import CmdVel3DoF, OdometrySpeeds3DoF, TimedOdometry3DoF
+from miniros import AsyncROSClient, naming, aparsedata
 from miniros_configurator import get_config
 
 
@@ -26,8 +26,8 @@ class TrackedRobotIK:
 
 
 class MotorControllerClient(AsyncROSClient):
-    def __init__(self, ip="localhost", port=3000, _parse_handlers=True):
-        super().__init__("motorcontroller", ip, port, _parse_handlers)
+    def __init__(self, ip="localhost", port=3000):
+        super().__init__(naming.Node.MOTOR_CONTROLLER, ip, port)
 
         # get port based on system
         # for testing compatibility
@@ -51,33 +51,29 @@ class MotorControllerClient(AsyncROSClient):
         self.last_update = time.time()
         self.n = 0
 
-        # optimizations
-        self.prev_v = 0
-        self.prev_w = 0
+        self.latest_cmd: tuple[float, float] | None = None
+        self.cmd_event = asyncio.Event()
+        
+        # topics
+        self.add_topic_handler(self.cmdvel_handler,
+            naming.Node.MOTION_CONTROLLER,
+            naming.Topic.MC_CMDVEL,
+        )
 
-    @aparsedata(datatypes.Vector)
-    async def on_motioncontroller_cmdvel(self, data: datatypes.Vector):
+    @aparsedata(CmdVel3DoF)
+    async def cmdvel_handler(self, data):
         self.last_update = time.time()
 
-        v, w = data.x, data.y
-        if self.prev_v == v and self.prev_w == w:
-            return
-
-        self.prev_v = v
-        self.prev_w = w
-
-        l, r = self.ik.calculate_wheel_speeds(v, -w)
-
-        await self.serial.set_speeds(l, -r)
-
+        v, w = data.tangent, data.angular
+        self.latest_cmd = (v, w)
+        self.cmd_event.set()
+        
     async def open_port(self):
         await self.serial.serial.open()
 
 
 async def main():
     client = MotorControllerClient()
-    odometry_post_delay = get_config("motor_controller.miniros.odometry_post_delay")
-
     is_running = True
 
     await client.open_port()
@@ -88,53 +84,79 @@ async def main():
         is_running = False
         asyncio.create_task(client.serial.close())
 
+    async def cmdvel_write_task():
+        last_sent = None
+        while is_running:
+            await client.cmd_event.wait()
+            client.cmd_event.clear()
+            
+            cmd = client.latest_cmd
+            client.latest_cmd = None
+            
+            if cmd is not None and cmd != last_sent:
+                v, w = cmd
+                try:
+                    l, r = client.ik.calculate_wheel_speeds(v, -w)
+                    await client.serial.set_speeds(l, -r)
+                    last_sent = cmd
+                
+                except Exception as e:
+                    print(f"serial write failed: {e}", flush=True)
+                    await asyncio.sleep(0.1)
+
     async def run():
         await client.wait()
 
-        prev = time.monotonic()
+        odometry_topic = await client.topic(
+            naming.Topic.O_POSE, 
+            TimedOdometry3DoF
+        )
+        speeds_topic = await client.topic(
+            naming.Topic.O_VELOCITY,
+            OdometrySpeeds3DoF
+        )
 
-        odometry_topic = await client.topic("odometry", datatypes.TimedMovement3DoF)
-        speeds_topic = await client.topic("velocity", datatypes.Vector)
-
-        last_seen_odometry = -1
-    
         while is_running:
-            version = client.serial.odometry_version
-            if version != last_seen_odometry:
-                odom = client.serial.last_odometry                
+            await client.serial.odometry_event.wait()
+            client.serial.odometry_event.clear()
 
-                if odom is None:
-                    await asyncio.sleep(odometry_post_delay)
-                    continue
+            odom = client.serial.last_odometry
+            client.serial.last_odometry = None
 
-                last_seen_odometry = version                
+            if odom != None:                
                 x, y, theta, v, w = odom
 
                 await odometry_topic.post(
-                    datatypes.TimedMovement3DoF(
+                    TimedOdometry3DoF(
                         timestamp=time.time(),
-                        movement=datatypes.Movement3DoF(
-                            x=x,
-                            y=y,
-                            theta=-theta,
-                        ),
+                        x=x,
+                        y=y,
+                        theta=-theta,
                     )
                 )
-                await speeds_topic.post(datatypes.Vector(v, w, 0))
-        
-            await asyncio.sleep(odometry_post_delay)
+                await speeds_topic.post(
+                    OdometrySpeeds3DoF(
+                        tangent=v,
+                        normal=0.0,
+                        angular=w, 
+                    )
+                )
 
         await client.stop()
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
+    
+    run_task = asyncio.create_task(run())
+    write_task = asyncio.create_task(cmdvel_write_task())
+    fetch_task = asyncio.create_task(client.serial.fetch_task())
 
     try:
         await asyncio.gather(
             client.run(),
-            # crash_prevent(),
-            client.serial.fetch_task(),
-            run(),
+            fetch_task,
+            run_task,
+            write_task,
         )
 
     except KeyboardInterrupt:

@@ -19,7 +19,10 @@
 #define R_EN 10
 
 // speed low pass filter
-#define SPEED_LOW_PASS_SIZE 10
+#define SPEED_LOW_PASS_SIZE 5
+
+// timing
+#define UPDATE_TIME_US 10000
 
 // hardware constants
 const float WHEEL_RADIUS = 0.0189;
@@ -55,9 +58,9 @@ float v = 0.0, omega = 0.0;
 float speedLeft = 0.0, speedRight = 0.0;
 
 // PID constants
-const float Kp = 0.0;
-const float Ki = 10.0;
-const float Kd = 0.0;
+const float Kp = 10.0; // TODO: tune this
+const float Ki = 10.0; // TODO: tune this
+const float Kd = 0.1;  // TODO: tune this
 const float PID_LIMIT = 255.0;
 
 // PID variables
@@ -76,8 +79,10 @@ float rightMeasures[SPEED_LOW_PASS_SIZE] = {0};
 uint8_t rightMeasuresIdx = 0;
 
 void setup() {
+  // setup clock
   TCCR1B = (TCCR1B & ~((1 << CS10) | (1 << CS11) | (1 << CS12))) | (1 << CS11);
 
+  // set pin modes
   pinMode(L_IN1, OUTPUT);
   digitalWrite(L_IN1, LOW);
 
@@ -96,9 +101,9 @@ void setup() {
   pinMode(R_EN, OUTPUT);
   analogWrite(R_EN, 0);
 
+  // begin outer connections
   Serial.begin(115200);
   Wire.begin();
-
   mpu.initialize();
 
   // if mpu is not available
@@ -145,7 +150,7 @@ void loop() {
   unsigned long now = micros();
 
   // update every 10 ms
-  if (now - lastMicros >= 10000) {
+  if (now - lastMicros >= UPDATE_TIME_US) {
     ticks += 1;
 
     float dt = (now - lastMicros) * 1e-6f;  // seconds
@@ -155,10 +160,17 @@ void loop() {
       return;
     }
 
+    // if delta time was too big - reset without update
     if (dt > 0.25) {
+      leftPrevError = 0;
+      rightPrevError = 0;
+      leftIntegral = 0;
+      rightIntegral = 0;
+
       lastLeftTicks = leftEnc.read();
       lastRightTicks = -rightEnc.read();
       lastMicros = now;
+      
       return;
     }
 
@@ -182,8 +194,10 @@ void loop() {
     float omega_enc = dThetaEnc / dt;
 
     // recalculate alpha value
-    if (labs(deltaLeft) > 0 || labs(deltaRight) > 0) {
+    if (deltaLeft != 0 || deltaRight != 0) {
       alpha = 0.98;
+    } else if (speedLeft != 0 || speedRight != 0) {
+      alpha = 0.8; // robot wont lose its rotation on too slow turns
     } else {
       alpha = 0;
     }
@@ -202,7 +216,7 @@ void loop() {
     float ct = cosf(theta);
 
     x += v * dt * ct;
-    y -= v * dt * st; // TODO: check if the minus needed here
+    y -= v * dt * st;
 
     // reset time
     lastMicros = now;
@@ -234,7 +248,7 @@ void handleSerialInput() {
     if (c == '\n' || c == '\r') {
       if (idx > 0) {
         buf[idx] = '\0';
-        processCommand(buf);   // move your strtok logic here
+        processCommand(buf);
         idx = 0;
       }
     } else if (idx < sizeof(buf) - 1) {
@@ -247,6 +261,7 @@ void processCommand(char* cmd) {
   char* token = strtok(cmd, " ");
   if (!token) return;
 
+  // command R: reset position
   if (token[0] == 'R') {
     token = strtok(NULL, " ");
     if (!token) return;
@@ -266,6 +281,8 @@ void processCommand(char* cmd) {
     theta = newH;
 
     theta = fmodf(theta + PI, 2 * PI) - PI;
+  
+  // command S: set wheel speeds
   } else if (token[0] == 'S') {
     token = strtok(NULL, " ");
     if (!token) return;
@@ -288,6 +305,8 @@ void processCommand(char* cmd) {
   }
 }
 
+// Writes PWM and direction values to specified pins
+// 'pwm' can be negative if motor needs to run in reverse
 void setMotor(int in1, int in2, int en, int pwm) {
   if (pwm > 0) {
     digitalWrite(in1, HIGH);
@@ -311,6 +330,7 @@ void setMotor(int in1, int in2, int en, int pwm) {
   analogWrite(en, pwm);
 }
 
+// motor control loop: update motors control using current measurements
 void motorControl(float dt, float dLeft, float dRight) {
   if (dt < 0.0001f) dt = 0.0001f;
 
@@ -338,17 +358,23 @@ void motorControl(float dt, float dLeft, float dRight) {
   float leftErr = speedLeft - leftMeas;
   float rightErr = speedRight - rightMeas;
 
-  leftIntegral += leftErr * dt * 3;
+  leftIntegral += leftErr * dt;
   leftIntegral = constrain(leftIntegral, -PID_LIMIT / Ki, PID_LIMIT / Ki);
 
-  rightIntegral += rightErr * dt * 3;
+  rightIntegral += rightErr * dt;
   rightIntegral = constrain(rightIntegral, -PID_LIMIT / Ki, PID_LIMIT / Ki);
+
+  static float leftDerivFilt = 0.0;
+  static float rightDerivFilt = 0.0;
 
   float leftDeriv = (leftErr - leftPrevError) / dt;
   float rightDeriv = (rightErr - rightPrevError) / dt;
 
-  int leftPwm = (int)(Kp * leftErr + Ki * leftIntegral + Kd * leftDeriv);
-  int rightPwm = (int)(Kp * rightErr + Ki * rightIntegral + Kd * rightDeriv);
+  leftDerivFilt = 0.7 * leftDerivFilt + 0.3 * leftDeriv;
+  rightDerivFilt = 0.7 * rightDerivFilt + 0.3 * rightDeriv;
+
+  int leftPwm = (int)(Kp * leftErr + Ki * leftIntegral + Kd * leftDerivFilt);
+  int rightPwm = (int)(Kp * rightErr + Ki * rightIntegral + Kd * rightDerivFilt);
 
   leftPwm = constrain(leftPwm, -PID_LIMIT, PID_LIMIT);
   rightPwm = constrain(rightPwm, -PID_LIMIT, PID_LIMIT);
