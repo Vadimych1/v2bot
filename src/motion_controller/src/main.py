@@ -541,7 +541,7 @@ class MotionController(AsyncROSClient):
             if mask[py, px]:
                 r = 10
                 y0, y1 = max(0, py - r), min(mask.shape[0], py + r + 1)
-                x0, x1 = max(0, px - r), min(mask.shape[0], px + r + 1)
+                x0, x1 = max(0, px - r), min(mask.shape[1], px + r + 1)
                 
                 free = np.argwhere(~mask[y0:y1, x0:x1])
                 

@@ -320,6 +320,7 @@ class PathPlanner(AsyncROSClient):
     def _smooth_path(self, path, iterations=3):
         for _ in range(iterations):
             new_path = [path[0]]
+            
             for i in range(1, len(path) - 1):
                 x = 0.25 * path[i - 1][0] + 0.5 * path[i][0] + 0.25 * path[i + 1][0]
                 y = 0.25 * path[i - 1][1] + 0.5 * path[i][1] + 0.25 * path[i + 1][1]
@@ -331,6 +332,8 @@ class PathPlanner(AsyncROSClient):
                     new_path.append(path[i])
                 
                 new_path.append(path[-1])
+            
+            path = new_path
 
         return path
 

@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 import uvicorn
 
 from miniros import AsyncROSClient, datatypes, naming, aparsedata
-from miniros.util.datatypes import OccupancyGrid, Goal2D, TimedCmdVel3DoF, TimedPose3DoF, TimedOdometry3DoF
+from miniros.util.datatypes import OccupancyGrid, Goal2D, CmdVel3DoF, TimedPose3DoF, TimedOdometry3DoF
 from miniros_configurator import get_config
 
 import importlib.resources
@@ -70,7 +70,7 @@ class GoalManagerClient(AsyncROSClient):
             "saves",
         )
 
-    @aparsedata(TimedCmdVel3DoF)
+    @aparsedata(CmdVel3DoF)
     async def cmdvel_handler(self, data):
         self.latest_cmdvel = {"linear": float(data.tangent), "angular": float(data.angular)}
         await self.broadcast({"type": "cmdvel", "cmdvel": self.latest_cmdvel})
