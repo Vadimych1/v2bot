@@ -493,8 +493,8 @@ class PathPlanner(AsyncROSClient):
         self.grid = map.grid
         self.width = map.width
         self.height = map.height
-        self.offset_x = map.offset_x
-        self.offset_y = map.offset_y
+        self.offset_x = map.offset_x_px
+        self.offset_y = map.offset_y_px
         self.resolution = map.resolution
 
     @aparsedata(TimedPose3DoF)

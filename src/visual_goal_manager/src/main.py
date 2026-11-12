@@ -183,8 +183,8 @@ class GoalManagerClient(AsyncROSClient):
             "height": height,
             # IMPORTANT:
             # These are PIXEL offsets of world (0, 0).
-            "offset_x": float(data.offset_x),
-            "offset_y": float(data.offset_y),
+            "offset_x": float(data.offset_x_px),
+            "offset_y": float(data.offset_y_px),
             "resolution": float(data.resolution),
         }
 

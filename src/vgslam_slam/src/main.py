@@ -113,8 +113,8 @@ def scan_worker(pipe: ProcessPipe, running):
                     grid=grid.grid,
                     width=grid.width,
                     height=grid.height,
-                    offset_x=grid.zero_offset_x_px,
-                    offset_y=grid.zero_offset_y_px,
+                    offset_x_px=grid.zero_offset_x_px,
+                    offset_y_px=grid.zero_offset_y_px,
                     resolution=grid.resolution,
                 )
 
@@ -260,9 +260,11 @@ class SLAMClient(AsyncROSClient):
     
     ## helper functions
     def startup(self):
+        self.running.set()
         self.pipe.start()
 
     def shutdown(self):
+        self.running.clear()
         self.pipe.stop()
 
     async def consume_results(self):
