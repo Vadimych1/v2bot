@@ -26,7 +26,7 @@
 
 // hardware constants
 const float WHEEL_RADIUS = 0.0189;
-const float WHEEL_BASE = 0.198;
+const float WHEEL_BASE = 0.1577;
 
 // this value depends on motor
 // how to measure this:
@@ -54,18 +54,31 @@ const float GYRO_SCALE = PI / (180.0 * 16.4);
 float x = 0.0, y = 0.0, theta = 0.0;
 float v = 0.0, omega = 0.0;
 
+// robot target speeds
+float vTarget = 0.0, omegaTarget = 0.0;
+
 // wheels target speeds
 float speedLeft = 0.0, speedRight = 0.0;
 
-// PID constants
-const float Kp = 10.0; // TODO: tune this
-const float Ki = 10.0; // TODO: tune this
-const float Kd = 0.1;  // TODO: tune this
+// wheels PID constants
+const float Kp = 10.0;
+const float Ki = 15.0;
+const float Kd = 0.0;
 const float PID_LIMIT = 255.0;
+
+// robot PID constants
+const float Kp_v = 2.0, Ki_v = 4.0;
+const float Kp_w = 1.0, Ki_w = 2.0;
+const float V_I_LIMIT = 0.1; // V_I_LIMIT * Ki_v = 0.4 m/s additional
+const float W_I_LIMIT = 0.5; // W_I_LIMIT * Ki_w = 1 rad/s additional
+const float V_MAX = 1.0;
+const float W_MAX = 4.0;
 
 // PID variables
 float leftIntegral = 0.0, rightIntegral = 0.0;
 float leftPrevError = 0.0, rightPrevError = 0.0;
+float leftDerivFilt = 0.0, rightDerivFilt = 0.0;
+float vIntegral = 0.0, omegaIntegral = 0.0;
 
 // time
 unsigned long lastMicros = 0;
@@ -166,6 +179,10 @@ void loop() {
       rightPrevError = 0;
       leftIntegral = 0;
       rightIntegral = 0;
+      vIntegral = 0.0;
+      omegaIntegral = 0.0;
+      leftDerivFilt = 0.0;
+      rightDerivFilt = 0.0;
 
       lastLeftTicks = leftEnc.read();
       lastRightTicks = -rightEnc.read();
@@ -196,7 +213,7 @@ void loop() {
     // recalculate alpha value
     if (deltaLeft != 0 || deltaRight != 0) {
       alpha = 0.98;
-    } else if (speedLeft != 0 || speedRight != 0) {
+    } else if (abs(speedLeft) > 0.001 || abs(speedRight) > 0.001) {
       alpha = 0.8; // robot wont lose its rotation on too slow turns
     } else {
       alpha = 0;
@@ -207,6 +224,7 @@ void loop() {
     v = dCenter / dt;
 
     // update motor signals
+    bodyControl(dt);
     motorControl(dt, dLeft, dRight);
 
     theta += omega * dt;
@@ -233,7 +251,7 @@ void loop() {
     Serial.print(theta, 4);
     Serial.print(" ");
     Serial.print(v, 4);
-    Serial.print(" ");
+    Serial.print(" ");  
     Serial.println(omega, 4);
   }
 }
@@ -282,27 +300,45 @@ void processCommand(char* cmd) {
 
     theta = fmodf(theta + PI, 2 * PI) - PI;
   
-  // command S: set wheel speeds
-  } else if (token[0] == 'S') {
+  // command V: set linear and angular speeds
+  } else if (token[0] == 'V') {
     token = strtok(NULL, " ");
     if (!token) return;
-    float newLeft = atof(token);
+    float newLinear = atof(token);
 
     token = strtok(NULL, " ");
     if (!token) return;
-    float newRight = atof(token);
+    float newAngular = atof(token);
 
-    speedLeft = newLeft;
-    speedRight = newRight;
-
-    if (newLeft == 0.0) {
-      leftIntegral = 0.0;
-    }
-
-    if (newRight == 0.0) {
-      rightIntegral = 0.0;
-    }
+    vTarget = newLinear;
+    omegaTarget = newAngular;
   }
+}
+
+// Updates leftSpeed and rightSpeed with V+W PI regulators
+void bodyControl(float dt) {
+  float vErr = vTarget - v;
+  float wErr = omegaTarget - omega;
+
+  // self-windup prevention
+  if (abs(vTarget) < 0.01 && abs(v) < 0.01 &&
+      abs(omegaTarget) < 0.01 && abs(omega) < 0.01) {
+    vIntegral = 0.0;
+    omegaIntegral = 0.0;
+  } else {
+    vIntegral = constrain(vIntegral + vErr * dt, -V_I_LIMIT, V_I_LIMIT);
+    omegaIntegral = constrain(omegaIntegral + wErr * dt, -W_I_LIMIT, W_I_LIMIT);
+  }
+
+  float vCorr = vTarget + Kp_v * vErr + Ki_v * vIntegral;
+  float wCorr = omegaTarget + Kp_w * wErr + Ki_w * omegaIntegral;
+
+  vCorr = constrain(vCorr, -V_MAX, V_MAX);
+  wCorr = constrain(wCorr, -W_MAX, W_MAX);
+
+  // differential kinematics
+  speedLeft = (vCorr - wCorr * WHEEL_BASE / 2) / WHEEL_RADIUS;
+  speedRight = - (vCorr + wCorr * WHEEL_BASE / 2) / WHEEL_RADIUS;
 }
 
 // Writes PWM and direction values to specified pins
@@ -330,7 +366,7 @@ void setMotor(int in1, int in2, int en, int pwm) {
   analogWrite(en, pwm);
 }
 
-// motor control loop: update motors control using current measurements
+// update motor commands using PID regulators
 void motorControl(float dt, float dLeft, float dRight) {
   if (dt < 0.0001f) dt = 0.0001f;
 
@@ -363,9 +399,6 @@ void motorControl(float dt, float dLeft, float dRight) {
 
   rightIntegral += rightErr * dt;
   rightIntegral = constrain(rightIntegral, -PID_LIMIT / Ki, PID_LIMIT / Ki);
-
-  static float leftDerivFilt = 0.0;
-  static float rightDerivFilt = 0.0;
 
   float leftDeriv = (leftErr - leftPrevError) / dt;
   float rightDeriv = (rightErr - rightPrevError) / dt;

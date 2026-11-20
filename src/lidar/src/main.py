@@ -5,9 +5,11 @@ import platform
 import asyncio
 import signal
 
-from miniros import AsyncROSClient, datatypes, naming
+from miniros import AsyncROSClient, datatypes, naming, get_logger
 from miniros import MinirosPipe, ProcessPipe, PipeProtocol
 from miniros_configurator import get_config
+
+l = get_logger("lidar")
 
 protocol = PipeProtocol([datatypes.Lidar2D])
 
@@ -18,7 +20,7 @@ def scan_worker(pipe: ProcessPipe, running, port, baudrate):
     )
     
     if not lidar.connect():
-        raise Exception("[] failed to connect")
+        raise Exception("failed to connect")
     
     lidar.start_scan()
     
@@ -39,7 +41,7 @@ def scan_worker(pipe: ProcessPipe, running, port, baudrate):
                 pipe.write(data)
             
             else:
-                print("[] null scan", flush=True)
+                l.warning("scan is None")
     
     finally:
         lidar.stop_scan()
@@ -83,6 +85,8 @@ async def main():
         client.shutdown()
     
     async def run():
+        l.info("running")
+        
         nq_start_time = time.time()
         nq = 0
         
@@ -92,7 +96,7 @@ async def main():
 
         while running:
             if not client.pipe.is_alive():
-                print("[] lidar worker died. restarting", flush=True)
+                l.warning("lidar worker died, restarting")
                 client.startup()
                 await asyncio.sleep(0.5)
                 continue
@@ -100,6 +104,7 @@ async def main():
             lidar = await client.pipe.read_async(timeout=1.0)
 
             if lidar is None:
+                l.debug("skipped scan: None")
                 continue
             
             nq += 1
@@ -107,11 +112,13 @@ async def main():
             await ldr_topic.post(lidar)
             
             if (nq + 1) % 30 == 0:
-                print(f"Running at {nq / (time.time() - nq_start_time)}Hz")
+                l.info(f"running at %.2f Hz", nq / (time.time() - nq_start_time))
 
             if (nq + 1) % 100 == 0:
                 nq = 0
                 nq_start_time = time.time()
+
+        l.info("stopped")
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
@@ -127,6 +134,8 @@ async def main():
     except KeyboardInterrupt:
         pass
 
+    finally:
+        shutdown(None, None)
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -11,20 +11,6 @@ from miniros import AsyncROSClient, naming, aparsedata
 from miniros_configurator import get_config
 
 
-class TrackedRobotIK:
-    def __init__(self, track_distance: float, wheel_radius: float):
-        super().__init__()
-
-        self.d = track_distance
-        self.r = wheel_radius
-
-    def calculate_wheel_speeds(self, v: float, omega: float) -> np.ndarray:
-        speeds = np.array([v - omega * self.d / 2, v + omega * self.d / 2])
-        speeds /= self.r
-
-        return speeds
-
-
 class MotorControllerClient(AsyncROSClient):
     def __init__(self, ip="localhost", port=3000):
         super().__init__(naming.Node.MOTOR_CONTROLLER, ip, port)
@@ -43,10 +29,6 @@ class MotorControllerClient(AsyncROSClient):
             case _:
                 port = get_config("motor_controller.serial.port")
 
-        track_distance = get_config("motor_controller.robot.track_distance")
-        wheel_radius = get_config("motor_controller.robot.wheel_radius")
-
-        self.ik = TrackedRobotIK(track_distance, wheel_radius)
         self.serial = ArduinoSerial(port, baudrate)
         self.last_update = time.time()
         self.n = 0
@@ -96,8 +78,7 @@ async def main():
             if cmd is not None and cmd != last_sent:
                 v, w = cmd
                 try:
-                    l, r = client.ik.calculate_wheel_speeds(v, -w)
-                    await client.serial.set_speeds(l, -r)
+                    await client.serial.set_speeds(v, -w)
                     last_sent = cmd
                 
                 except Exception as e:

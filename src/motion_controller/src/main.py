@@ -1,14 +1,17 @@
 from scipy.ndimage import distance_transform_edt, gaussian_filter
+from .source.state_machine import State, StateMachine, RecoveryBehavior
 import numpy as np
 import skfmm
 import math
 import time
 
-from miniros import AsyncROSClient, naming, aparsedata
+from miniros import AsyncROSClient, naming, aparsedata, get_logger
 from miniros.util.datatypes import NumpyArray, CmdVel3DoF, TimedPose3DoF, OccupancyGrid
 from miniros.util.datatypes import TimedOdometry3DoF, OdometrySpeeds3DoF
 from miniros_configurator import get_config as gc
 import asyncio
+
+l = get_logger("motion_controller")
 
 class MotionControllerConfig:
     def __init__(self):
@@ -122,6 +125,15 @@ class MotionController(AsyncROSClient):
         
         self._edt_busy = False
         self._fmm_busy = False
+        
+        # state machine
+        self._sm = StateMachine(
+            max_no_progress_time=10.0,
+            progress_threshold=0.2,
+            pos_follow_tolerance=0.2,
+            pos_adjust_tolerance=0.05,
+            angle_adjust_tolerance=math.pi/30,
+        )
         
         # topics
         self.add_topic_handler(self.occupancy_grid_handler,
@@ -570,11 +582,51 @@ class MotionController(AsyncROSClient):
         finally:
             self._fmm_busy = False
 
-    def compute_control(self):
-        """
-        Choose best cmdvel using DWA (Dynamic Window Approach) algorithm 
-        """
+    def _get_clearance_at(self, x, y) -> float:
+        snap = self._map_snapshot
         
+        if snap["obstacle_distance_map"] is None:
+            return float('inf')
+        
+        return self._get_obstacle_distance(x, y, 
+            snap["resolution"], snap["offset_x"], snap["offset_y"],
+            snap["width"], snap["height"], snap["obstacle_distance_map"],
+        )
+    
+    def _backward_clearance_score(self, distance: float = 1.0, num_samples: int = 10) -> float:
+        back_heading = self.robot_heading + math.pi
+        cos_b, sin_b = math.cos(back_heading), math.sin(back_heading)
+        min_c = float('inf')
+        
+        for i in range(1, num_samples + 1):
+            d = (i / num_samples) * distance
+            c = self._get_clearance_at(self.robot_x + d * cos_b, self.robot_y + d * sin_b)
+            if c < min_c:
+                min_c = c
+        
+        return min_c
+    
+    def _arc_clearance_score(self, v: float, w: float, horizon: float = 1.0) -> float:
+        states = self._simulate_trajectory(v, w, 
+            self.robot_x, self.robot_y, self.robot_heading, 
+            clearance_now=self.config.robot_radius * 2.0,
+        )
+        
+        min_c = float('inf')
+        for sx, sy, _ in states:
+            if math.hypot(sx - self.robot_x, sy - self.robot_y) > horizon:
+                break
+            
+            c = self._get_clearance_at(sx, sy)
+            if c <= self.config.robot_radius:
+                return -1.0
+            
+            if c < min_c:
+                min_c = c
+        
+        return min_c
+
+    def _compute_dwa(self):
         snap = self._map_snapshot
         fmm_snap = self._fmm_snapshot
         
@@ -601,13 +653,9 @@ class MotionController(AsyncROSClient):
         w = self.current_w
 
         if grid is None or path is None or len(path) < 2:
-            return 0.0, 0.0
+            return 0.0, 0.0, False
 
         # if we are close to the target
-        last_x, last_y = path[-1]
-        if math.hypot(x - last_x, y - last_y) < self.config.goal_tolerance:
-            return 0.0, 0.0
-
         now = time.monotonic()
         control_dt = 0.05 if self._last_cmd_time is None else min(0.5, max(1e-3, now - self._last_cmd_time))
         self._last_cmd_time = now
@@ -639,10 +687,10 @@ class MotionController(AsyncROSClient):
         best_v = 0.0
         best_w = 0.0
         
-        # penetration trajectory
-        best_pen = float("inf")
-        best_pen_v = 0.0
-        best_pen_w = 0.0
+        # # penetration trajectory
+        # best_pen = float("inf")
+        # best_pen_v = 0.0
+        # best_pen_w = 0.0
 
         clearance_now = self._get_obstacle_distance(x, y, resolution, of_x, of_y, width, height, obstacle_distance_map)
         _, _, target_seg_i = self._target_from_proj(path, x, y)
@@ -665,34 +713,144 @@ class MotionController(AsyncROSClient):
                     best_v = v_cand
                     best_w = w_cand
 
-                # if on current step all the costs were inf
-                if best_cost == float("inf"):
-                    pen = 0.0
-                    start_c = self._get_obstacle_distance(x, y, resolution, of_x, of_y, width, height, obstacle_distance_map)
-                    for sx, sy, _ in states:
-                        c = self._get_obstacle_distance(sx, sy, resolution, of_x, of_y, width, height, obstacle_distance_map)
-                        if c < self.config.robot_radius:
-                            pen += self.config.robot_radius - c
+                # # if on current step all the costs were inf
+                # if best_cost == float("inf"):
+                #     pen = 0.0
+                #     start_c = self._get_obstacle_distance(x, y, resolution, of_x, of_y, width, height, obstacle_distance_map)
+                #     for sx, sy, _ in states:
+                #         c = self._get_obstacle_distance(sx, sy, resolution, of_x, of_y, width, height, obstacle_distance_map)
+                #         if c < self.config.robot_radius:
+                #             pen += self.config.robot_radius - c
 
-                    # reward for coming from wall
-                    end_c = self._get_obstacle_distance(states[-1][0], states[-1][1], resolution, of_x, of_y, width, height, obstacle_distance_map)
-                    escape_reward = (end_c - start_c)
-                    score = pen - 2.0 * escape_reward
-                    if score < best_pen:
-                        best_pen = score
-                        best_pen_v, best_pen_w = v_cand, w_cand
+                #     # reward for coming from wall
+                #     end_c = self._get_obstacle_distance(states[-1][0], states[-1][1], resolution, of_x, of_y, width, height, obstacle_distance_map)
+                #     escape_reward = (end_c - start_c)
+                #     score = pen - 2.0 * escape_reward
+                #     if score < best_pen:
+                #         best_pen = score
+                #         best_pen_v, best_pen_w = v_cand, w_cand
 
         # instead of just standing still find the least-penetration trajectory
         if best_cost == float("inf"):
-            self._smoothed_w = self.config.alpha_w * best_pen_w + (1 - self.config.alpha_w) * self._smoothed_w
-            self._smoothed_v = self.config.alpha_v * best_pen_v + (1 - self.config.alpha_v) * self._smoothed_v
+            # self._smoothed_w = self.config.alpha_w * best_pen_w + (1 - self.config.alpha_w) * self._smoothed_w
+            # self._smoothed_v = self.config.alpha_v * best_pen_v + (1 - self.config.alpha_v) * self._smoothed_v
+
+            return self._smoothed_v, self._smoothed_w, True
 
         else:
             self._smoothed_w = self.config.alpha_w * best_w + (1 - self.config.alpha_w) * self._smoothed_w
             self._smoothed_v = self.config.alpha_v * best_v + (1 - self.config.alpha_v) * self._smoothed_v
 
-        return self._smoothed_v, self._smoothed_w
+            return self._smoothed_v, self._smoothed_w, False
 
+    # now just spins in place to achieve required heading angle
+    # in future this must also move the robot to achieve precise positioning
+    def _compute_adjust(self, target_heading: float):
+        angle_error = self._normalize_angle(target_heading - self.robot_heading)
+        
+        kp = 2.0 # TODO: move to config
+        w = kp * angle_error
+        
+        w = max(-self.config.max_angular_speed, min(self.config.max_angular_speed, w))
+        
+        if abs(angle_error) < math.pi / 60: # TODO: move to config
+            return 0.0, 0.0
+        
+        return 0.0, w
+
+    def _compute_recovery(self, behavior: RecoveryBehavior):
+        if behavior == RecoveryBehavior.ROTATE:
+            w = 0.5 # TODO: move to config
+            self._smoothed_w = w * self.config.alpha_w + (1 - self.config.alpha_w) * self._smoothed_w
+            self._smoothed_v = 0.0
+            
+            return self._smoothed_v, self._smoothed_w
+            
+        elif behavior == RecoveryBehavior.BACK:
+            v_back = -0.15 # TODO: move to config
+            clearance = self._backward_clearance_score(distance=1.0)
+            
+            if clearance > self.config.robot_radius + 0.1:
+                self._smoothed_v = self.config.alpha_v * v_back + (1 - self.config.alpha_v) * self._smoothed_v
+                self._smoothed_w = 0.0
+                return self._smoothed_v, self._smoothed_w
+            
+            w = 0.5 # TODO: move to config
+            
+            self._smoothed_w = w * self.config.alpha_w + (1 - self.config.alpha_w) * self._smoothed_w
+            self._smoothed_v = 0.0
+            
+            return self._smoothed_v, self._smoothed_w
+            
+        elif behavior == RecoveryBehavior.BACK_AND_ROTATE:
+            v_back = -0.15 # TODO: move to config
+            w_arc = 0.3 # TODO: move to config
+            
+            left_score = self._arc_clearance_score(v_back, +w_arc)
+            right_score = self._arc_clearance_score(v_back, -w_arc)
+            
+            if left_score < 0.0 and right_score < 0.0:
+                w = 0.5 # TODO: move to config
+                
+                self._smoothed_w = w * self.config.alpha_w + (1 - self.config.alpha_w) * self._smoothed_w
+                self._smoothed_v = 0.0
+                
+                return self._smoothed_v, self._smoothed_w
+            
+            if left_score >= right_score:
+                v, w = v_back, +w_arc
+            
+            else:
+                v, w = v_back, -w_arc
+            
+            self._smoothed_v = self.config.alpha_v * v + (1 - self.config.alpha_v) * self._smoothed_v
+            self._smoothed_w = self.config.alpha_w * w + (1 - self.config.alpha_w) * self._smoothed_w
+            
+            return self._smoothed_v, self._smoothed_w
+
+        return 0.0, 0.0
+
+    def compute_control(self):
+        """
+        Choose best cmdvel using DWA (Dynamic Window Approach) algorithm 
+        """
+
+        self._sm.feed((self.robot_x, self.robot_y, self.robot_heading))
+        state = self._sm.state
+        
+        # TODO: implement MANUAL state
+        if state in (State.IDLE, State.FAILURE, State.MANUAL):
+            self._smoothed_v = 0.0
+            self._smoothed_w = 0.0
+            return 0.0, 0.0
+
+        elif state == State.FOLLOW_PATH:
+            v, w, stuck = self._compute_dwa()
+            
+            if stuck:
+                self._sm.fail()
+            
+            elif v == 0.0 and w == 0.0 and self.global_path is not None:
+                dist = math.hypot(self.robot_x - self._sm.target[0], self.robot_y - self._sm.target[1]) # pyright: ignore[reportOptionalSubscript]
+                if dist > self.config.goal_tolerance: # pyright: ignore[reportOperatorIssue]
+                    self._sm.fail()
+            
+            return v, w
+        
+        elif state == State.ADJUST:
+            heading = self._sm.get_adjust_heading()
+            
+            if heading is not None:
+                return self._compute_adjust(heading)
+        
+        elif state == State.RECOVERY:
+            b = self._sm.get_recovery_behavior()
+            
+            if b is not None:
+                return self._compute_recovery(b)
+        
+        return 0.0, 0.0
+        
     @aparsedata(OccupancyGrid)
     async def occupancy_grid_handler(self, map):
         map_changed = await asyncio.to_thread(self._prepare_map, map)
@@ -732,18 +890,33 @@ class MotionController(AsyncROSClient):
 
     @aparsedata(NumpyArray)
     async def path_handler(self, path: np.ndarray):
+        if len(path) < 2:
+            self._sm.nav_to(None)
+            self.global_path = None
+            return
+        
         rebuild_fmm = self.global_path is None or np.linalg.norm(self.global_path[-1] - path[-1]) > 0.2  
         self.global_path = path
+
+        t_x, t_y = path[-1]
+        # TODO: retrieve this from goal_manager command or something
+        t_theta = math.atan2(path[-1][1] - path[-2][1], path[-1][0] - path[-2][0])
+
+        self._sm.nav_to((t_x, t_y, t_theta))
 
         if rebuild_fmm:
             await asyncio.to_thread(self._rebuild_fmm)
 
 
 async def main():
+    l.info("running package")
+    
     client = MotionController(config=MotionControllerConfig())
     cmdvel_post_delay = gc("motion_controller.miniros.cmdvel_post_delay")
 
     async def run_path_tracker():
+        l.info("tracker started")
+        
         await client.wait()
 
         cmdvel_topic = await client.topic(
@@ -777,7 +950,7 @@ async def main():
             try:
                 v, w = await asyncio.to_thread(client.compute_control)
             except Exception as e:
-                print(f"compute_control failed: {e}", flush=True)
+                l.error(f"compute_control failed", exc_info=True)
                 v, w = 0.0, 0.0
             
             await cmdvel_topic.post(CmdVel3DoF(
@@ -785,6 +958,8 @@ async def main():
                 normal=0.0,
                 angular=w,
             ))
+        
+        l.info("tracker exited")
 
     path_track = asyncio.create_task(run_path_tracker())
 

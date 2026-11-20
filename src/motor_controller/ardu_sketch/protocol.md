@@ -4,8 +4,8 @@
 ### R [float newX] [float newY] [float newTheta]
 Sets internal x, y, and theta values with new ones 
 
-### S [float leftSpeed] [float rightSpeed]
-Sets target leftSpeed and rightSpeed
+### V [float linear] [float angular]
+Sets target linear and angular speeds
 
 ## Receive
 Script periodically sends position and speeds values in this format:
