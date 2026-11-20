@@ -111,6 +111,9 @@ class MotionController(AsyncROSClient):
         # smoothed control
         self._smoothed_w = 0.0
         self._smoothed_v = 0.0
+        
+        self._stuck_ticks = 0
+        self._stuck_ticks_threshold = 100 # 5 seconds on 20 Hz # TODO: move to config
 
         # global path from path_planner
         self.global_path = None
@@ -172,7 +175,7 @@ class MotionController(AsyncROSClient):
             return False
 
         clearance = self._get_obstacle_distance(x, y, resolution, of_x, of_y, width, height, obstacle_distance_map)
-        return clearance <= self.config.robot_radius
+        return clearance < self.config.robot_radius # small tolerance
 
     def _simulate_trajectory(self, v: float, w: float, x, y, theta, clearance_now):
         states = []
@@ -296,10 +299,11 @@ class MotionController(AsyncROSClient):
         prev_v, prev_w,
         T, gx_T, gy_T,
     ):
-        if len(states) <= 0 or obstacle_distance_map is None:
+        if len(states) == 0 or obstacle_distance_map is None:
             return float("inf")
 
-        for x, y, _ in states:
+        # skip the first pose so it does not affect possibly good trajectory
+        for x, y, _ in states[1:]:
             if self._is_collision(x, y, obstacle_distance_map, resolution, of_x, of_y, width, height):
                 return float("inf")
                 
@@ -713,27 +717,27 @@ class MotionController(AsyncROSClient):
                     best_v = v_cand
                     best_w = w_cand
 
-                # # if on current step all the costs were inf
-                # if best_cost == float("inf"):
-                #     pen = 0.0
-                #     start_c = self._get_obstacle_distance(x, y, resolution, of_x, of_y, width, height, obstacle_distance_map)
-                #     for sx, sy, _ in states:
-                #         c = self._get_obstacle_distance(sx, sy, resolution, of_x, of_y, width, height, obstacle_distance_map)
-                #         if c < self.config.robot_radius:
-                #             pen += self.config.robot_radius - c
+                # if on current step all the costs were inf
+                if best_cost == float("inf"):
+                    pen = 0.0
+                    start_c = self._get_obstacle_distance(x, y, resolution, of_x, of_y, width, height, obstacle_distance_map)
+                    for sx, sy, _ in states:
+                        c = self._get_obstacle_distance(sx, sy, resolution, of_x, of_y, width, height, obstacle_distance_map)
+                        if c < self.config.robot_radius:
+                            pen += self.config.robot_radius - c
 
-                #     # reward for coming from wall
-                #     end_c = self._get_obstacle_distance(states[-1][0], states[-1][1], resolution, of_x, of_y, width, height, obstacle_distance_map)
-                #     escape_reward = (end_c - start_c)
-                #     score = pen - 2.0 * escape_reward
-                #     if score < best_pen:
-                #         best_pen = score
-                #         best_pen_v, best_pen_w = v_cand, w_cand
+                    # reward for coming from wall
+                    end_c = self._get_obstacle_distance(states[-1][0], states[-1][1], resolution, of_x, of_y, width, height, obstacle_distance_map)
+                    escape_reward = (end_c - start_c)
+                    score = pen - 2.0 * escape_reward
+                    if score < best_pen:
+                        best_pen = score
+                        best_pen_v, best_pen_w = v_cand, w_cand
 
         # instead of just standing still find the least-penetration trajectory
         if best_cost == float("inf"):
-            # self._smoothed_w = self.config.alpha_w * best_pen_w + (1 - self.config.alpha_w) * self._smoothed_w
-            # self._smoothed_v = self.config.alpha_v * best_pen_v + (1 - self.config.alpha_v) * self._smoothed_v
+            self._smoothed_w = self.config.alpha_w * best_pen_w + (1 - self.config.alpha_w) * self._smoothed_w
+            self._smoothed_v = self.config.alpha_v * best_pen_v + (1 - self.config.alpha_v) * self._smoothed_v
 
             return self._smoothed_v, self._smoothed_w, True
 
@@ -827,13 +831,20 @@ class MotionController(AsyncROSClient):
         elif state == State.FOLLOW_PATH:
             v, w, stuck = self._compute_dwa()
             
-            if stuck:
+            if stuck and self._stuck_ticks >= self._stuck_ticks_threshold:
                 self._sm.fail()
+                return 0.0, 0.0
+
+            elif stuck:
+                self._stuck_ticks += 1
             
-            elif v == 0.0 and w == 0.0 and self.global_path is not None:
-                dist = math.hypot(self.robot_x - self._sm.target[0], self.robot_y - self._sm.target[1]) # pyright: ignore[reportOptionalSubscript]
-                if dist > self.config.goal_tolerance: # pyright: ignore[reportOperatorIssue]
-                    self._sm.fail()
+            else:
+                self._stuck_ticks = 0
+            
+            # elif v == 0.0 and w == 0.0 and self.global_path is not None:
+            #     dist = math.hypot(self.robot_x - self._sm.target[0], self.robot_y - self._sm.target[1]) # pyright: ignore[reportOptionalSubscript]
+            #     if dist > self.config.goal_tolerance: # pyright: ignore[reportOperatorIssue]
+            #         self._sm.fail()
             
             return v, w
         

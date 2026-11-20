@@ -40,7 +40,7 @@ class StateMachine:
         self._progress_thresh = progress_threshold
         self._max_npt = max_no_progress_time
         self._last_progress_ts = time.monotonic()
-        self._last_progress_pos = (0, 0, 0)
+        self._last_progress_pos = None
         
         self._pos_follow_tol = pos_follow_tolerance
         self._pos_tol = pos_adjust_tolerance
@@ -84,7 +84,7 @@ class StateMachine:
             t = time.monotonic()
 
             # follow initialization
-            if self._last_progress_pos == (0, 0, 0):
+            if self._last_progress_pos is None:
                 self._last_progress_pos = pos
                 self._last_progress_ts = t
                 return
@@ -152,20 +152,31 @@ class StateMachine:
             pass
     
     def nav_to(self, target: tuple | None):
-        self._rec_start_ts = 0.0
-        
         if target is None:
+            self.target = None
+            self._rec_start_ts = 0.0
             self.state = State.IDLE
             l.debug("entered State.IDLE from 'nav_to': target is None")
+            return
 
-        else:
+        same_goal = (
+            self.target is not None
+            and self.state in (State.FOLLOW_PATH, State.ADJUST, State.RECOVERY)
+            and self._dist(self.target, target) < 0.5 # TODO: move to config
+        )
+        
+        if same_goal:
             self.target = target
-            self.state = State.FOLLOW_PATH
-            self._last_progress_ts = time.monotonic()
-            self._last_progress_pos = (0, 0, 0) # will be updated in 'feed'
-            self._rec_attempts = 0
-            
-            l.debug("entered State.FOLLOW_PATH from 'nav_to'")
+            return
+
+        self.target = target
+        self.state = State.FOLLOW_PATH
+        self._last_progress_ts = time.monotonic()
+        self._last_progress_pos = None
+        self._rec_attempts = 0
+        self._rec_start_ts = 0.0
+
+        l.debug("entered State.FOLLOW_PATH from 'nav_to'")
     
     def fail(self):
         self._rec_start_ts = time.monotonic()
