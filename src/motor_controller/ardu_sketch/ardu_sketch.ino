@@ -54,30 +54,25 @@ const float GYRO_SCALE = PI / (180.0 * 16.4);
 float x = 0.0, y = 0.0, theta = 0.0;
 float v = 0.0, omega = 0.0;
 
-// robot target speeds
+// regulators targets
 float vTarget = 0.0, omegaTarget = 0.0;
-
-// wheels target speeds
 float speedLeft = 0.0, speedRight = 0.0;
 
-// wheels PID constants
+// wheels PI constants
 const float Kp = 10.0;
 const float Ki = 15.0;
-const float Kd = 0.0;
-const float PID_LIMIT = 255.0;
+const float PI_LIMIT = 255.0;
 
-// robot PID constants
-const float Kp_v = 2.0, Ki_v = 4.0;
-const float Kp_w = 1.0, Ki_w = 2.0;
-const float V_I_LIMIT = 0.1; // V_I_LIMIT * Ki_v = 0.4 m/s additional
+// robot PI constants
+const float Kp_v = 0.9, Ki_v = 4.0;
+const float Kp_w = 0.9, Ki_w = 2.0;
+const float V_I_LIMIT = 0.15; // V_I_LIMIT * Ki_v = 0.4 m/s additional
 const float W_I_LIMIT = 0.5; // W_I_LIMIT * Ki_w = 1 rad/s additional
 const float V_MAX = 1.0;
 const float W_MAX = 4.0;
 
-// PID variables
+// PI variables
 float leftIntegral = 0.0, rightIntegral = 0.0;
-float leftPrevError = 0.0, rightPrevError = 0.0;
-float leftDerivFilt = 0.0, rightDerivFilt = 0.0;
 float vIntegral = 0.0, omegaIntegral = 0.0;
 
 // time
@@ -175,14 +170,10 @@ void loop() {
 
     // if delta time was too big - reset without update
     if (dt > 0.25) {
-      leftPrevError = 0;
-      rightPrevError = 0;
       leftIntegral = 0;
       rightIntegral = 0;
       vIntegral = 0.0;
       omegaIntegral = 0.0;
-      leftDerivFilt = 0.0;
-      rightDerivFilt = 0.0;
 
       lastLeftTicks = leftEnc.read();
       lastRightTicks = -rightEnc.read();
@@ -323,8 +314,8 @@ void bodyControl(float dt) {
   // self-windup prevention
   if (abs(vTarget) < 0.01 && abs(v) < 0.01 &&
       abs(omegaTarget) < 0.01 && abs(omega) < 0.01) {
-    vIntegral = 0.0;
-    omegaIntegral = 0.0;
+    vIntegral *= 0.6;
+    omegaIntegral *= 0.6;
   } else {
     vIntegral = constrain(vIntegral + vErr * dt, -V_I_LIMIT, V_I_LIMIT);
     omegaIntegral = constrain(omegaIntegral + wErr * dt, -W_I_LIMIT, W_I_LIMIT);
@@ -366,7 +357,7 @@ void setMotor(int in1, int in2, int en, int pwm) {
   analogWrite(en, pwm);
 }
 
-// update motor commands using PID regulators
+// update motor commands using PI regulators
 void motorControl(float dt, float dLeft, float dRight) {
   if (dt < 0.0001f) dt = 0.0001f;
 
@@ -394,26 +385,22 @@ void motorControl(float dt, float dLeft, float dRight) {
   float leftErr = speedLeft - leftMeas;
   float rightErr = speedRight - rightMeas;
 
+  if (abs(speedLeft) < 0.01 && abs(speedRight) < 0.01 && abs(leftMeas) < 0.01 && abs(rightMeas) < 0.01) {
+    leftIntegral *= 0.6;
+    rightIntegral *= 0.6;
+  }
+
   leftIntegral += leftErr * dt;
-  leftIntegral = constrain(leftIntegral, -PID_LIMIT / Ki, PID_LIMIT / Ki);
-
   rightIntegral += rightErr * dt;
-  rightIntegral = constrain(rightIntegral, -PID_LIMIT / Ki, PID_LIMIT / Ki);
 
-  float leftDeriv = (leftErr - leftPrevError) / dt;
-  float rightDeriv = (rightErr - rightPrevError) / dt;
+  leftIntegral = constrain(leftIntegral, -PI_LIMIT / Ki, PI_LIMIT / Ki);
+  rightIntegral = constrain(rightIntegral, -PI_LIMIT / Ki, PI_LIMIT / Ki);
 
-  leftDerivFilt = 0.7 * leftDerivFilt + 0.3 * leftDeriv;
-  rightDerivFilt = 0.7 * rightDerivFilt + 0.3 * rightDeriv;
+  int leftPwm = (int)(Kp * leftErr + Ki * leftIntegral);
+  int rightPwm = (int)(Kp * rightErr + Ki * rightIntegral);
 
-  int leftPwm = (int)(Kp * leftErr + Ki * leftIntegral + Kd * leftDerivFilt);
-  int rightPwm = (int)(Kp * rightErr + Ki * rightIntegral + Kd * rightDerivFilt);
-
-  leftPwm = constrain(leftPwm, -PID_LIMIT, PID_LIMIT);
-  rightPwm = constrain(rightPwm, -PID_LIMIT, PID_LIMIT);
-
-  leftPrevError = leftErr;
-  rightPrevError = rightErr;
+  leftPwm = constrain(leftPwm, -PI_LIMIT, PI_LIMIT);
+  rightPwm = constrain(rightPwm, -PI_LIMIT, PI_LIMIT);
 
   setMotor(L_IN1, L_IN2, L_EN, leftPwm);
   setMotor(R_IN1, R_IN2, R_EN, rightPwm);

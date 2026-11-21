@@ -136,6 +136,7 @@ class MotionController(AsyncROSClient):
             pos_follow_tolerance=0.2,
             pos_adjust_tolerance=0.05,
             angle_adjust_tolerance=math.pi/30,
+            recovery_behaviors=[RecoveryBehavior.ROTATE]
         )
         
         # topics
@@ -175,7 +176,7 @@ class MotionController(AsyncROSClient):
             return False
 
         clearance = self._get_obstacle_distance(x, y, resolution, of_x, of_y, width, height, obstacle_distance_map)
-        return clearance < self.config.robot_radius # small tolerance
+        return clearance < self.config.robot_radius
 
     def _simulate_trajectory(self, v: float, w: float, x, y, theta, clearance_now):
         states = []
@@ -691,10 +692,10 @@ class MotionController(AsyncROSClient):
         best_v = 0.0
         best_w = 0.0
         
-        # # penetration trajectory
-        # best_pen = float("inf")
-        # best_pen_v = 0.0
-        # best_pen_w = 0.0
+        # penetration trajectory
+        best_pen = float("inf")
+        best_pen_v = 0.0
+        best_pen_w = 0.0
 
         clearance_now = self._get_obstacle_distance(x, y, resolution, of_x, of_y, width, height, obstacle_distance_map)
         _, _, target_seg_i = self._target_from_proj(path, x, y)
