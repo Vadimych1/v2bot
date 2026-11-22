@@ -331,9 +331,8 @@ class PathPlanner(AsyncROSClient):
                 else:
                     new_path.append(path[i])
                 
-                new_path.append(path[-1])
-            
-            path = new_path
+            new_path.append(path[-1])
+            path = new_path.copy()
 
         return path
 
